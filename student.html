@@ -1,98 +1,66 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>Student – MIDI Classroom</title>
+  <title>MIDI Student</title>
 </head>
 <body>
-  <h2>Student Page</h2>
-  <label>Room Name:</label>
-  <input id="room" placeholder="enter room" value="room1"><br><br>
-  <button id="connectBtn">Join Room & Start MIDI</button>
-  <p id="status">Not connected</p>
-  <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
+<h2>MIDI Classroom – STUDENT</h2>
 
-  <script>
-    // === WebSocket URL (automatic for local + production) ===
-    function selectWebSocketUrl() {
-      const protocol = location.protocol === "https:" ? "wss" : "ws";
-      return `${protocol}://${location.host}/ws`;
-    }
+<label>Room name:</label>
+<input id="room" value="room1">
+<button id="connectBtn">Connect</button>
 
-    // ====== UI helpers ======
-    const statusEl = document.getElementById("status");
-    const logEl = document.getElementById("log");
+<p id="status">Not connected</p>
 
-    function log(...args) { 
-      console.log(...args);
-      logEl.textContent += args.join(" ") + "\n";
-    }
+<button id="sendNote">Send test MIDI note</button>
 
-    function setStatus(s) {
-      statusEl.innerText = s;
-      log("STATUS:", s);
-    }
+<script>
+let ws = null;
 
-    let ws;
+// ---- WebSocket URL selection ----
+function selectWebSocketUrl() {
+  if (location.hostname === "localhost") {
+    return "ws://localhost:8080";
+  }
+  return "wss://midi-classroom-production.up.railway.app";
+}
 
-    document.getElementById("connectBtn").addEventListener("click", async () => {
-      const room = document.getElementById("room").value || "room1";
-      const wsUrl = selectWebSocketUrl();
+function setStatus(t) {
+  document.getElementById("status").innerText = t;
+}
 
-      setStatus("Connecting to " + wsUrl + " ...");
-      log("Using WS URL:", wsUrl);
+document.getElementById("connectBtn").addEventListener("click", () => {
+  const room = document.getElementById("room").value || "room1";
+  const wsUrl = selectWebSocketUrl();
 
-      ws = new WebSocket(wsUrl);
+  setStatus("Connecting to " + wsUrl + "...");
 
-      ws.onopen = async () => {
-        setStatus("Connected to server");
-        ws.send(JSON.stringify({ type: "join", role: "student", room }));
-        await setupMIDI();
-      };
+  ws = new WebSocket(wsUrl);
 
-      ws.onclose = () => {
-        setStatus("Disconnected");
-        log("WS closed");
-      };
+  ws.onopen = () => {
+    setStatus("Connected");
+    ws.send(JSON.stringify({ type: "join", role: "student", room }));
+  };
 
-      ws.onerror = (e) => {
-        setStatus("WebSocket error");
-        log("WS error", e);
-      };
-    });
+  ws.onmessage = (ev) => {
+    console.log("Message from host:", ev.data);
+  };
 
-    // ====== MIDI Setup ======
-    async function setupMIDI() {
-      if (!navigator.requestMIDIAccess) {
-        setStatus("WebMIDI not supported (use Chrome desktop)");
-        return;
-      }
+  ws.onclose = () => setStatus("Disconnected");
+  ws.onerror = () => setStatus("WebSocket error — check Railway logs");
+});
 
-      try {
-        const access = await navigator.requestMIDIAccess();
-        setStatus("MIDI enabled — connect keyboard and play");
+document.getElementById("sendNote").addEventListener("click", () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    alert("Not connected!");
+    return;
+  }
 
-        // Listen to all MIDI input devices
-        for (let input of access.inputs.values()) {
-          input.onmidimessage = (msg) => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({
-                type: "midi",
-                data: [...msg.data]
-              }));
-            }
-          };
-        }
-
-        access.onstatechange = (ev) => {
-          log("MIDI device change:", ev.port?.name);
-        };
-
-      } catch (err) {
-        setStatus("MIDI Failed: " + err);
-        log(err);
-      }
-    }
-  </script>
+  ws.send(JSON.stringify({
+    type: "midi",
+    data: { note: 60, velocity: 100, type: "noteon" }
+  }));
+});
+</script>
 </body>
 </html>
