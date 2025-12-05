@@ -4,12 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 
-// Create basic HTTP server to serve the HTML files
+// Create HTTP server to serve HTML files
 const server = http.createServer((req, res) => {
   let filePath = "." + req.url;
-  if (filePath === "./") {
-    filePath = "./host.html"; // Default to host page
-  }
+  if (filePath === "./") filePath = "./host.html"; // default page
 
   const ext = path.extname(filePath);
   let contentType = "text/html";
@@ -20,7 +18,7 @@ const server = http.createServer((req, res) => {
   fs.readFile(filePath, (error, content) => {
     if (error) {
       res.writeHead(404);
-      res.end("404 - File Not Found");
+      res.end("404 - Not Found");
     } else {
       res.writeHead(200, { "Content-Type": contentType });
       res.end(content, "utf-8");
@@ -28,8 +26,11 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// Create WebSocket server
-const wss = new WebSocket.Server({ server });
+// WebSocket server WITH explicit path
+const wss = new WebSocket.Server({
+  server,
+  path: "/ws"
+});
 
 const rooms = new Map();
 
@@ -50,7 +51,6 @@ wss.on("connection", (ws) => {
 
         if (ws.role === "host") room.hosts.add(ws);
         if (ws.role === "student") room.students.add(ws);
-
         return;
       }
 
@@ -60,12 +60,10 @@ wss.on("connection", (ws) => {
 
         room.hosts.forEach((hostSocket) => {
           if (hostSocket.readyState === WebSocket.OPEN) {
-            hostSocket.send(
-              JSON.stringify({
-                type: "midi",
-                data: obj.data,
-              })
-            );
+            hostSocket.send(JSON.stringify({
+              type: "midi",
+              data: obj.data
+            }));
           }
         });
       }
@@ -83,7 +81,6 @@ wss.on("connection", (ws) => {
 });
 
 const PORT = process.env.PORT || 8080;
-
 server.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
