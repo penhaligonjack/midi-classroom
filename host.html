@@ -1,41 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MIDI Host</title>
+</head>
+<body>
+<h2>MIDI Classroom – HOST</h2>
+
+<label>Room name:</label>
+<input id="room" value="room1">
+<button id="connectBtn">Connect</button>
+
+<p id="status">Not connected</p>
+
+<script>
+let ws = null;
+
+// ---- WebSocket URL selection ----
+function selectWebSocketUrl() {
+  if (location.hostname === "localhost") {
+    return "ws://localhost:8080";
+  }
+  return "wss://midi-classroom-production.up.railway.app";
+}
+
+function setStatus(t) {
+  document.getElementById("status").innerText = t;
+}
+
+function playNote(data) {
+  console.log("Received MIDI:", data);
+}
+
 document.getElementById("connectBtn").addEventListener("click", () => {
   const room = document.getElementById("room").value || "room1";
   const wsUrl = selectWebSocketUrl();
-  
-  setStatus("Connecting to " + wsUrl + " ...");
-  log("Using WS URL:", wsUrl);
 
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (err) {
-    setStatus("WebSocket constructor error");
-    log(err);
-    return;
-  }
+  setStatus("Connecting to " + wsUrl + "...");
+
+  ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    setStatus("Connected to server");
+    setStatus("Connected");
     ws.send(JSON.stringify({ type: "join", role: "host", room }));
   };
 
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg.type === "midi") {
-        playNote(msg.data);
-      }
+      if (msg.type === "midi") playNote(msg.data);
     } catch (e) {
-      log("Invalid WS message", e);
+      console.error("Invalid WS message", e);
     }
   };
 
-  ws.onclose = (e) => {
-    setStatus("Disconnected");
-    log("WS closed", e);
-  };
-
-  ws.onerror = (e) => {
-    setStatus("WebSocket error (check console & Railway logs)");
-    log("WS error", e);
-  };
+  ws.onclose = () => setStatus("Disconnected");
+  ws.onerror = () => setStatus("WebSocket error — check Railway logs");
 });
+</script>
+</body>
+</html>
