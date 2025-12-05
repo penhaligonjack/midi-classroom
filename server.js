@@ -1,64 +1,142 @@
+// -----------------------------
+// MIDI Classroom WebSocket Server
+// -----------------------------
+
 const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
 const path = require("path");
-const { WebSocketServer } = require("ws");
 
-const PORT = process.env.PORT || 8080;
 const app = express();
+const server = http.createServer(app);
 
-// === Serve static files ===
-// This allows host.html, student.html, etc to load in the browser
+// Serve static files (host.html, student.html)
 app.use(express.static(path.join(__dirname)));
 
-// Default route → open host page
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "host.html"));
-});
+// Required for Railway
+const PORT = process.env.PORT || 3000;
 
-// Start HTTP server
-const server = app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
-});
+// WebSocket server
+const wss = new WebSocket.Server({ server });
 
-// === WebSocket server ===
-const wss = new WebSocketServer({ server });
-const rooms = {};
+// Store connected clients
+let hosts = {};        // { classroom: ws }
+let students = {};     // { classroom: { keyboardID: ws } }
+
+function ensureClassroom(classroom) {
+    if (!students[classroom]) students[classroom] = {};
+}
+
+// -----------------------------
+// WebSocket Connections
+// -----------------------------
 
 wss.on("connection", (ws) => {
-  ws.on("message", (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (e) {
-      console.log("Invalid JSON:", raw);
-      return;
-    }
+    console.log("Client connected.");
 
-    if (msg.type === "join") {
-      ws.role = msg.role;
-      ws.room = msg.room;
-      if (!rooms[msg.room]) rooms[msg.room] = { host: null, students: new Set() };
+    ws.on("message", (msg) => {
+        try {
+            const data = JSON.parse(msg);
+            const type = data.type;
 
-      if (msg.role === "host") {
-        rooms[msg.room].host = ws;
-      } else {
-        rooms[msg.room].students.add(ws);
-      }
-      return;
-    }
+            // -------------------------
+            // Host joins classroom
+            // -------------------------
+            if (type === "host-join") {
+                hosts[data.classroom] = ws;
+                ensureClassroom(data.classroom);
+                console.log(`Host connected to classroom ${data.classroom}`);
+                return;
+            }
 
-    if (msg.type === "midi") {
-      if (!ws.room) return;
-      const room = rooms[ws.room];
-      if (room && room.host && room.host.readyState === 1) {
-        room.host.send(JSON.stringify({ type: "midi", data: msg.data }));
-      }
-    }
-  });
+            // -------------------------
+            // Student joins classroom
+            // -------------------------
+            if (type === "student-join") {
+                ensureClassroom(data.classroom);
+                students[data.classroom][data.keyboard] = ws;
 
-  ws.on("close", () => {
-    if (ws.room && rooms[ws.room]) {
-      rooms[ws.room].students?.delete(ws);
-      if (rooms[ws.room].host === ws) rooms[ws.room].host = null;
-    }
-  });
+                console.log(
+                    `Student keyboard ${data.keyboard} joined classroom ${data.classroom}`
+                );
+
+                // Acknowledge to student
+                ws.send(
+                    JSON.stringify({
+                        type: "joined",
+                        classroom: data.classroom,
+                        keyboard: data.keyboard,
+                    })
+                );
+
+                return;
+            }
+
+            // -------------------------
+            // Student → Host (MIDI)
+            // -------------------------
+            if (type === "student-midi") {
+                const host = hosts[data.classroom];
+                if (host && host.readyState === WebSocket.OPEN) {
+                    host.send(
+                        JSON.stringify({
+                            type: "midi",
+                            keyboard: data.keyboard,
+                            note: data.note,
+                            velocity: data.velocity,
+                        })
+                    );
+                }
+                return;
+            }
+
+            // -------------------------
+            // Host → Students (broadcast)
+            // -------------------------
+            if (type === "host-broadcast") {
+                ensureClassroom(data.classroom);
+
+                Object.values(students[data.classroom]).forEach((client) => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(
+                            JSON.stringify({
+                                type: "broadcast",
+                                payload: data.payload,
+                            })
+                        );
+                    }
+                });
+                return;
+            }
+        } catch (e) {
+            console.error("Invalid WebSocket message:", msg);
+        }
+    });
+
+    ws.on("close", () => {
+        console.log("Client disconnected.");
+
+        // Remove from hosts
+        for (const classroom of Object.keys(hosts)) {
+            if (hosts[classroom] === ws) {
+                delete hosts[classroom];
+            }
+        }
+
+        // Remove from students
+        for (const classroom of Object.keys(students)) {
+            for (const id of Object.keys(students[classroom])) {
+                if (students[classroom][id] === ws) {
+                    delete students[classroom][id];
+                }
+            }
+        }
+    });
+});
+
+// -----------------------------
+// Start server
+// -----------------------------
+server.listen(PORT, () => {
+    console.log("MIDI Classroom server running on port", PORT);
 });
