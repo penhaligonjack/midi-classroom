@@ -3,206 +3,106 @@
 <head>
     <meta charset="utf-8" />
     <title>Student – MIDI Classroom</title>
-
-    <style>
-        body { font-family: Arial; }
-
-        /* PIANO STYLES */
-        #piano {
-            display: flex;
-            position: relative;
-            height: 180px;
-            margin-top: 20px;
-            user-select: none;
-        }
-
-        .white {
-            width: 40px;
-            height: 180px;
-            border: 1px solid #333;
-            background: white;
-            position: relative;
-            box-sizing: border-box;
-            z-index: 1;
-        }
-
-        .white.active {
-            background: #a3d8ff;
-        }
-
-        .black {
-            width: 26px;
-            height: 110px;
-            background: black;
-            position: absolute;
-            top: 0;
-            margin-left: -13px;
-            z-index: 2;
-            border-radius: 0 0 4px 4px;
-        }
-
-        .black.active {
-            background: #66aaff;
-        }
-    </style>
 </head>
 <body>
+    <h1>Student – MIDI Classroom</h1>
 
-    <h2>Student – MIDI Classroom</h2>
-
-    <!-- CLASSROOM SELECT -->
-    <label>Choose Classroom:</label>
-    <select id="room">
+    <label>Classroom:</label>
+    <select id="classroom">
         <option value="77">Classroom 77</option>
         <option value="78">Classroom 78</option>
     </select>
     <br><br>
 
-    <!-- KEYBOARD NUMBER SELECT -->
-    <label>Your Keyboard Number:</label>
+    <label>Keyboard Number:</label>
     <select id="keyboard">
-        <script>
-            for (let i = 1; i <= 15; i++) {
-                document.write(`<option value="${i}">Keyboard ${i}</option>`);
-            }
-        </script>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7">7</option>
+        <option value="8">8</option>
+        <option value="9">9</option>
+        <option value="10">10</option>
+        <option value="11">11</option>
+        <option value="12">12</option>
+        <option value="13">13</option>
+        <option value="14">14</option>
+        <option value="15">15</option>
     </select>
+
     <br><br>
-
-    <button id="connectBtn">Join Session</button>
-
+    <button id="connectBtn">Join Classroom</button>
     <p id="status">Not connected</p>
 
-    <h3>Your Last Played Note</h3>
-    <div id="noteDisplay" style="font-size:22px;font-weight:bold;">(none)</div>
-
-    <!-- PIANO DISPLAY -->
-    <h3>Your Keyboard</h3>
-    <div id="piano"></div>
+    <h2>Your MIDI Activity</h2>
+    <pre id="log" style="background:#eee;padding:10px;"></pre>
 
     <script>
-        // Auto WebSocket URL
-        const PROD_WS = `wss://${window.location.host}`;
-        const LOCAL_WS = "ws://localhost:8080";
-        function selectWebSocketUrl() {
-            return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
-        }
-
-        const statusEl = document.getElementById("status");
-        const noteDisplay = document.getElementById("noteDisplay");
-
-        function setStatus(s) { statusEl.textContent = s; }
-
         let ws;
 
+        const log = (msg) => {
+            document.getElementById("log").textContent += msg + "\n";
+        };
+
         document.getElementById("connectBtn").onclick = async () => {
-            const room = document.getElementById("room").value;
-            const keyboard = document.getElementById("keyboard").value;
+            const classroom = document.getElementById("classroom").value;
+            const keyboard = parseInt(document.getElementById("keyboard").value);
 
-            ws = new WebSocket(selectWebSocketUrl());
+            ws = new WebSocket(`wss://${window.location.host}`);
 
-            ws.onopen = async () => {
-                setStatus("Connected");
+            ws.onopen = () => {
+                document.getElementById("status").innerText = "Connected";
 
                 ws.send(JSON.stringify({
-                    type: "join",
-                    role: "student",
-                    room,
+                    type: "student-join",
+                    classroom,
                     keyboard
                 }));
 
-                await setupMIDI();
+                setupMIDI(classroom, keyboard);
             };
 
-            ws.onclose = () => setStatus("Disconnected");
-            ws.onerror = () => setStatus("WebSocket error");
+            ws.onclose = () => {
+                document.getElementById("status").innerText = "Disconnected";
+            };
+
+            ws.onerror = () => {
+                document.getElementById("status").innerText = "WebSocket error";
+            };
         };
 
-        // Convert MIDI note → C#4, etc.
-        function midiToName(n) {
-            const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-            return names[n % 12] + (Math.floor(n / 12) - 1);
-        }
-
-        // Build on-screen piano (C3–C6)
-        const piano = document.getElementById("piano");
-        const whiteNotes = [0, 2, 4, 5, 7, 9, 11];
-
-        const noteToKey = {}; // map MIDI note → DOM element
-
-        function buildPiano() {
-            const start = 48; // C3
-            const end = 84;   // C6
-
-            for (let note = start; note <= end; note++) {
-                const isWhite = whiteNotes.includes(note % 12);
-
-                if (isWhite) {
-                    const key = document.createElement("div");
-                    key.className = "white";
-                    piano.appendChild(key);
-                    noteToKey[note] = key;
-                } else {
-                    const key = document.createElement("div");
-                    key.className = "black";
-
-                    // position above previous white key
-                    const whiteIndex = piano.children.length;
-                    key.style.left = (whiteIndex * 40) + "px";
-
-                    piano.appendChild(key);
-                    noteToKey[note] = key;
-                }
-            }
-        }
-
-        buildPiano();
-
-        // Flash piano keys
-        function highlight(note, on) {
-            const key = noteToKey[note];
-            if (!key) return;
-            if (on) key.classList.add("active");
-            else key.classList.remove("active");
-        }
-
-        async function setupMIDI() {
+        async function setupMIDI(classroom, keyboard) {
             if (!navigator.requestMIDIAccess) {
-                setStatus("WebMIDI not supported.");
+                log("MIDI not supported in this browser.");
                 return;
             }
 
-            try {
-                const access = await navigator.requestMIDIAccess();
-                setStatus("MIDI ready — play your keyboard!");
+            const midiAccess = await navigator.requestMIDIAccess();
 
-                for (let input of access.inputs.values()) {
-                    input.onmidimessage = (msg) => {
-                        const [cmd, note, vel] = msg.data;
+            log("MIDI ready. Play your keyboard!");
 
-                        // Highlight the piano
-                        if (cmd === 144 && vel > 0) {
-                            highlight(note, true);
-                            noteDisplay.textContent = midiToName(note);
-                        }
-                        if (cmd === 128 || (cmd === 144 && vel === 0)) {
-                            highlight(note, false);
-                        }
+            midiAccess.inputs.forEach((input) => {
+                input.onmidimessage = (msg) => {
+                    const [cmd, note, velocity] = msg.data;
 
-                        // Send to host
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({
-                                type: "midi",
-                                data: msg.data
-                            }));
-                        }
-                    };
-                }
-            } catch (err) {
-                setStatus("Failed to get MIDI access");
-            }
+                    // Only note-on messages (144) are sent
+                    if (cmd === 144 && velocity > 0) {
+                        log(`Note ${note} (velocity ${velocity})`);
+
+                        ws.send(JSON.stringify({
+                            type: "student-midi",
+                            classroom,
+                            keyboard,
+                            note,
+                            velocity
+                        }));
+                    }
+                };
+            });
         }
     </script>
-
 </body>
 </html>
