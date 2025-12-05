@@ -1,273 +1,190 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Student – MIDI Classroom</title>
+<title>Student — MIDI Classroom (61-key)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-    body { font-family: Arial; text-align: center; }
-
-    #keyboard {
-        user-select: none;
-        position: relative;
-        margin: 20px auto;
-        height: 200px;
-        width: fit-content;
-    }
-
-    .white-key, .black-key {
-        display: inline-flex;
-        justify-content: center;
-        align-items: flex-end;
-        font-size: 10px;
-        cursor: pointer;
-    }
-
-    .white-key {
-        width: 40px;
-        height: 200px;
-        border: 1px solid #333;
-        background: white;
-        position: relative;
-        z-index: 1;
-    }
-
-    .black-key {
-        width: 28px;
-        height: 120px;
-        background: black;
-        color: white;
-        position: absolute;
-        top: 0;
-        z-index: 2;
-        border-radius: 0 0 3px 3px;
-        text-align: center;
-        padding-top: 5px;
-    }
-
-    .active-white { background: #ffdd88 !important; }
-    .active-black { background: #bb8800 !important; }
-
-    #status { margin-top: 10px; }
+  body{ font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:12px; }
+  .controls{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  label{ font-size:14px; }
+  #keyboardWrap{ overflow-x:auto; border-top:1px solid #ddd; padding-top:12px; margin-top:12px; }
+  #keyboard{ position:relative; height:calc(180px + 36px); user-select:none; }
+  .white{ display:inline-block; width:40px; height:180px; border:1px solid #333; background:#fff; box-sizing:border-box; vertical-align:bottom; position:relative; }
+  .white.active{ background:#d6f0ff; }
+  .white .label{ position:absolute; bottom:-18px; left:4px; font-size:11px; }
+  .black{ position:absolute; width:26px; height:120px; background:#111; border-radius:0 0 4px 4px; z-index:3; color:#fff; text-align:center; pointer-events:auto; }
+  .black.active{ background:#66aaff; }
 </style>
 </head>
 <body>
+  <h2>Student — MIDI Classroom (61-key)</h2>
 
-<h2>Student – MIDI Classroom</h2>
+  <div class="controls">
+    <label>Classroom:
+      <select id="room"><option value="77">77</option><option value="78">78</option></select>
+    </label>
 
-<label>Classroom:</label>
-<select id="room">
-    <option value="77">Classroom 77</option>
-    <option value="78">Classroom 78</option>
-</select>
+    <label>Keyboard:
+      <select id="keyboardNum"></select>
+    </label>
 
-<br><br>
+    <label>Volume: <span id="volLabel">80</span>%</label>
+    <input id="volume" type="range" min="0" max="100" value="80">
+    <button id="connectBtn" class="small">Connect</button>
+    <span id="status">Not connected</span>
+  </div>
 
-<label>Keyboard Number:</label>
-<select id="keyboardNum"></select>
+  <div id="keyboardWrap"><div id="keyboard"></div></div>
 
-<br><br>
+  <script>
+  /* ---------- Config ---------- */
+  const START_MIDI = 36; const END_MIDI = 96;
+  const WHITE_STEPS = [0,2,4,5,7,9,11];
+  const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
-<button id="connectBtn">Join Classroom</button>
+  function wsURL(){
+    if (location.protocol === 'file:') return 'ws://localhost:8080';
+    return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  }
 
-<p id="status">Not connected</p>
+  /* ---------- DOM refs ---------- */
+  const roomEl = document.getElementById('room');
+  const keyboardNumEl = document.getElementById('keyboardNum');
+  const connectBtn = document.getElementById('connectBtn');
+  const statusEl = document.getElementById('status');
+  const keyboardDiv = document.getElementById('keyboard');
+  const volumeEl = document.getElementById('volume');
+  const volLabel = document.getElementById('volLabel');
 
-<label>Volume: <span id="volLabel">80</span>%</label><br>
-<input type="range" id="volume" min="0" max="100" value="80">
+  for(let i=1;i<=15;i++){ const o=document.createElement('option'); o.value=i; o.textContent=i; keyboardNumEl.appendChild(o); }
 
-<h3>Last Note: <span id="noteName">(none)</span></h3>
+  /* ---------- Audio ---------- */
+  let audioCtx = null; let masterGain = null;
+  const localVoices = new Map();
 
-<div id="keyboard"></div>
+  function initAudio(){ if (audioCtx) return; audioCtx = new (window.AudioContext || window.webkitAudioContext)(); masterGain = audioCtx.createGain(); masterGain.gain.value = volumeEl.value/100; masterGain.connect(audioCtx.destination); }
+  volumeEl.addEventListener('input', ()=> { volLabel.textContent = volumeEl.value; if (masterGain) masterGain.gain.setValueAtTime(volumeEl.value/100, audioCtx.currentTime || 0); });
 
-<script>
-/* -----------------------------
-   STATIC VALUES
-------------------------------*/
-const START_MIDI = 36; // C2
-const END_MIDI   = 96; // C7 (61 keys)
-const BLACKS = [1,3,6,8,10];
+  function midiToFreq(n){ return 440 * Math.pow(2, (n - 69)/12); }
 
-function isBlack(m) { return BLACKS.includes(m % 12); }
-
-const NOTE_NAMES = [
-    "C","C#/Db","D","D#/Eb","E","F",
-    "F#/Gb","G","G#/Ab","A","A#/Bb","B"
-];
-
-function midiToName(m) {
-    return NOTE_NAMES[m % 12] + (Math.floor(m/12) - 1);
-}
-
-/* -----------------------------
-   BUILD KEYBOARD NUMBER DROPDOWN
-------------------------------*/
-const keyboardDrop = document.getElementById("keyboardNum");
-for (let i = 1; i <= 15; i++) {
-    const opt = document.createElement("option");
-    opt.value = i;
-    opt.textContent = i;
-    keyboardDrop.appendChild(opt);
-}
-
-/* -----------------------------
-   AUDIO ENGINE
-------------------------------*/
-let audioCtx = null, gainNode = null;
-
-function initAudio() {
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        gainNode = audioCtx.createGain();
-        gainNode.connect(audioCtx.destination);
-        gainNode.gain.value = volume.value / 100;
-    }
-}
-
-function playTone(midi, vel=100) {
+  function playLocal(note, vel=100){
     initAudio();
-    const osc = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
+    if (localVoices.has(note)) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator(); osc.type='sine'; osc.frequency.value = midiToFreq(note);
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime((vel/127)*0.3, now + 0.005);
+    osc.connect(g); g.connect(masterGain); osc.start(now);
+    localVoices.set(note, {osc,g});
+  }
+  function stopLocal(note){
+    const v = localVoices.get(note); if(!v) return;
+    const now = audioCtx.currentTime; v.gain.gain.setTargetAtTime(0.0001, now, 0.02); try{ v.osc.stop(now + 0.04);}catch(e){}; localVoices.delete(note);
+  }
 
-    const freq = 440 * Math.pow(2, (midi - 69)/12);
-    osc.frequency.value = freq;
+  /* ---------- Build keyboard (61 keys) ---------- */
+  const keyElements = {};
+  function isWhite(m){ return WHITE_STEPS.includes(m % 12); }
 
-    g.gain.value = (vel/127) * 0.6;
-
-    osc.connect(g);
-    g.connect(gainNode);
-
-    osc.start();
-    osc.stop(audioCtx.currentTime + 0.35);
-}
-
-volume.oninput = () => {
-    volLabel.textContent = volume.value;
-    if (gainNode) gainNode.gain.value = volume.value/100;
-};
-
-/* -----------------------------
-   BUILD 61-KEY KEYBOARD
-------------------------------*/
-const keyboardDiv = document.getElementById("keyboard");
-let keyElements = {};
-function buildKeyboard() {
-
-    keyboardDiv.innerHTML = "";
-    let whiteIndex = 0;
-
-    for (let midi = START_MIDI; midi <= END_MIDI; midi++) {
-
-        if (!isBlack(midi)) {
-            const k = document.createElement("div");
-            k.className = "white-key";
-            k.dataset.midi = midi;
-            k.textContent = NOTE_NAMES[midi % 12];
-            k.style.left = (whiteIndex * 40) + "px";
-
-            keyboardDiv.appendChild(k);
-            keyElements[midi] = k;
-
-            whiteIndex++;
-        } else {
-            const k = document.createElement("div");
-            k.className = "black-key";
-            k.dataset.midi = midi;
-            k.textContent = NOTE_NAMES[midi % 12];
-
-            // Correct visual position of black keys
-            k.style.left = (whiteIndex * 40 - 14) + "px";
-
-            keyboardDiv.appendChild(k);
-            keyElements[midi] = k;
-        }
+  function buildKeyboard(){
+    keyboardDiv.innerHTML = '';
+    const whiteNodes = [];
+    for(let m=START_MIDI;m<=END_MIDI;m++){
+      if (isWhite(m)){
+        const el = document.createElement('div'); el.className='white'; el.dataset.midi=m;
+        const lbl = document.createElement('div'); lbl.className='label'; lbl.textContent = NOTE_NAMES[m%12] + Math.floor(m/12 - 1);
+        el.appendChild(lbl);
+        keyboardDiv.appendChild(el);
+        whiteNodes.push({m,el});
+        keyElements[m] = el;
+      }
     }
+    keyboardDiv.style.width = (whiteNodes.length * 40) + 'px';
+    // blacks
+    for(let i=0;i<whiteNodes.length;i++){
+      const leftWhite = whiteNodes[i];
+      const candidate = leftWhite.m + 1; const mod = candidate % 12;
+      if ([1,3,6,8,10].includes(mod) && candidate <= END_MIDI){
+        const b = document.createElement('div'); b.className='black'; b.dataset.midi=candidate;
+        b.style.left = (leftWhite.el.offsetLeft + 40 - 13) + 'px';
+        keyboardDiv.appendChild(b);
+        keyElements[candidate] = b;
+      }
+    }
+    // pointer handlers
+    Object.values(keyElements).forEach(el => { el.addEventListener('pointerdown', keyDown); el.addEventListener('pointerup', keyUp); el.addEventListener('pointerleave', keyUp); });
+  }
 
-    keyboardDiv.style.width = (whiteIndex * 40) + "px";
-}
+  function highlightKey(n, on= true){
+    const el = keyElements[n]; if(!el) return;
+    if(on) el.classList.add(el.classList.contains('black') ? 'active' : 'active');
+    else el.classList.remove('active');
+  }
 
-buildKeyboard();
-
-/* -----------------------------
-   KEY HIGHLIGHTING
-------------------------------*/
-function highlightKey(midi) {
-    const el = keyElements[midi];
-    if (!el) return;
-
-    el.classList.add(isBlack(midi) ? "active-black" : "active-white");
-
-    setTimeout(() => {
-        el.classList.remove("active-white");
-        el.classList.remove("active-black");
-    }, 120);
-}
-
-/* -----------------------------
-   WEBSOCKET
-------------------------------*/
-const status = document.getElementById("status");
-
-const WS_URL = (location.hostname === "localhost")
-    ? "ws://localhost:8080"
-    : "wss://" + location.host;
-
-let ws;
-
-connectBtn.onclick = () => {
-    ws = new WebSocket(WS_URL);
-
-    ws.onopen = () => {
-        status.textContent = "Connected";
-        ws.send(JSON.stringify({
-            type: "join",
-            role: "student",
-            room: room.value,
-            keyboard: keyboardNum.value
-        }));
+  /* ---------- WebSocket ---------- */
+  let ws = null;
+  connectBtn.addEventListener('click', ()=>{
+    if (ws && ws.readyState === WebSocket.OPEN){ ws.close(); connectBtn.textContent='Connect'; statusEl.textContent='Disconnected'; return; }
+    ws = new WebSocket(wsURL());
+    ws.onopen = ()=> { statusEl.textContent='Connected'; connectBtn.textContent='Disconnect'; ws.send(JSON.stringify({ type:'join', role:'student', room: roomEl.value, keyboard: keyboardNumEl.value })); };
+    ws.onmessage = (ev)=> {
+      try{
+        const obj = JSON.parse(ev.data);
+        if (obj.type === 'play-from-host' && Array.isArray(obj.midi)){
+          const [status,note,vel] = obj.midi;
+          if ((status & 0xf0) === 0x90 && vel > 0) { playLocal(note, vel); highlightKey(note, true); }
+          else { stopLocal(note); highlightKey(note, false); }
+        }
+      }catch(e){}
     };
+    ws.onclose = ()=> { statusEl.textContent='Disconnected'; connectBtn.textContent='Connect'; };
+    ws.onerror = ()=> statusEl.textContent='WebSocket error';
+  });
 
-    ws.onclose = () => status.textContent = "Disconnected";
-    ws.onerror = () => status.textContent = "WebSocket error";
-};
+  /* ---------- Send student MIDI to server & play locally ---------- */
+  function sendStudentMidi(status,note,vel){
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type:'student-midi', room: roomEl.value, keyboard: keyboardNumEl.value, midi:[status,note,vel] }));
+  }
 
-/* -----------------------------
-   MOUSE PLAY
-------------------------------*/
-keyboardDiv.addEventListener("mousedown", e => {
-    const midi = Number(e.target.dataset.midi);
-    if (!midi) return;
+  /* ---------- pointer handlers ---------- */
+  const pointerMap = new Map();
+  function keyDown(e){
+    e.preventDefault();
+    const midi = Number(this.dataset.midi);
+    try{ this.setPointerCapture && this.setPointerCapture(e.pointerId);}catch(e){}
+    pointerMap.set(e.pointerId,midi);
+    // play locally and send to server
+    playLocal(midi, 100);
+    highlightKey(midi, true);
+    sendStudentMidi(0x90, midi, 100);
+  }
+  function keyUp(e){
+    e.preventDefault();
+    const midi = Number(this.dataset.midi);
+    try{ this.releasePointerCapture && this.releasePointerCapture(e.pointerId);}catch(e){}
+    pointerMap.delete(e.pointerId);
+    stopLocal(midi);
+    highlightKey(midi, false);
+    sendStudentMidi(0x80, midi, 0);
+  }
 
-    playTone(midi);
-    highlightKey(midi);
-    noteName.textContent = midiToName(midi);
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "midi", midi: [144, midi, 100] }));
-    }
-});
-
-/* -----------------------------
-   MIDI KEYBOARD INPUT
-------------------------------*/
-if (navigator.requestMIDIAccess) {
+  /* ---------- WebMIDI support ---------- */
+  if (navigator.requestMIDIAccess){
     navigator.requestMIDIAccess().then(access => {
-        for (let input of access.inputs.values()) {
-            input.onmidimessage = msg => {
-                const [cmd, note, vel] = msg.data;
+      for (let input of access.inputs.values()){
+        input.onmidimessage = (ev) => {
+          const status = ev.data[0] & 0xf0; const note = ev.data[1]; const vel = ev.data[2];
+          if (status === 0x90 && vel > 0){ playLocal(note, vel); highlightKey(note, true); sendStudentMidi(0x90, note, vel); }
+          else if (status === 0x80 || (status === 0x90 && vel === 0)){ stopLocal(note); highlightKey(note, false); sendStudentMidi(0x80, note, 0); }
+        };
+      }
+    }).catch(()=>{ console.warn('No WebMIDI'); });
+  }
 
-                if (cmd === 144 && vel > 0) {
-                    playTone(note, vel);
-                    highlightKey(note);
-                    noteName.textContent = midiToName(note);
-
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: "midi", midi: [144, note, vel] }));
-                    }
-                }
-            };
-        }
-    });
-}
-</script>
-
+  /* ---------- init ---------- */
+  function init(){ buildKeyboard(); statusEl.textContent='Ready (not connected)'; document.addEventListener('pointerdown', ()=> { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }, { once:true }); }
+  init();
+  </script>
 </body>
 </html>
