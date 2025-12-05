@@ -1,243 +1,445 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8" />
-<title>Host – MIDI Classroom</title>
+  <meta charset="utf-8" />
+  <title>Host — MIDI Classroom (Monitor + Record)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:16px; max-width:1100px; margin:auto; }
+    .controls-row { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
+    select, button, input[type="range"] { padding:6px; }
+    #studentArea { margin-top:14px; display:flex; flex-direction:column; gap:10px; }
+    .studentBox { border:1px solid #ddd; padding:10px; border-radius:8px; background:#fafafa; position:relative; }
+    .studentHeader { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .meta { color:#666; font-size:13px; }
+    .note { font-weight:700; }
+    .miniPiano { height:56px; position:relative; margin-top:8px; }
+    .whiteMini { width:22px; height:56px; border:1px solid #333; background:#fff; float:left; box-sizing:border-box;}
+    .whiteMini.active { background:#a3d8ff; }
+    .blackMini { width:14px; height:34px; background:#111; position:absolute; top:0; margin-left:-7px; z-index:2; border-radius:0 0 3px 3px; }
+    .blackMini.active { background:#66aaff; }
+    .flash { animation: flashbg 140ms linear; }
+    @keyframes flashbg { from { background: #fff7e6 } to { background: #fafafa } }
+    .controls { display:flex; gap:8px; align-items:center; margin-top:8px; }
+    .downloadLink { margin-left:12px; }
+  </style>
 
-<style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    .studentBox {
-        border: 2px solid #333;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        background: #f3f3f3;
-        transition: background 0.15s;
-    }
-    .flash {
-        background: #ffe6a3 !important;
-    }
-
-    #monitorSelect {
-        padding: 6px;
-        margin-bottom: 20px;
-    }
-
-    #recordBtn {
-        padding: 8px 14px;
-        font-size: 15px;
-        cursor: pointer;
-    }
-</style>
+  <!-- Lamejs for MP3 encoding -->
+  <script src="https://unpkg.com/lamejs@1.2.0/lame.min.js"></script>
 </head>
 <body>
+  <h1>Host — MIDI Classroom (Monitor & Record)</h1>
 
-<h2>Host – MIDI Classroom</h2>
+  <div class="controls-row">
+    <label><b>Classroom:</b></label>
+    <select id="classroomSelect"><option value="77">77</option><option value="78">78</option></select>
 
-<!-- Volume Control -->
-<div>
-    <label>Volume: <span id="volLabel">80</span>%</label><br>
-    <input id="volume" type="range" min="0" max="100" value="80" />
-</div>
+    <label><b>Monitor Mode:</b></label>
+    <select id="monitorMode">
+      <option value="CLASS">Classroom (all)</option>
+      <option value="SOLO">Solo keyboard</option>
+    </select>
 
-<br>
+    <label><b>Solo Keyboard:</b></label>
+    <select id="soloKeyboard">
+      <option value="">(choose)</option>
+      <!-- 1..15 -->
+    </select>
 
-<!-- Student Monitor Selector -->
-<label><b>Monitor Student:</b></label><br>
-<select id="monitorSelect">
-    <option value="ALL">ALL (default)</option>
-</select>
+    <label style="margin-left:8px;">Volume: <span id="volLabel">85</span>%</label>
+    <input id="volume" type="range" min="0" max="100" value="85" style="width:180px">
+  </div>
 
-<br><br>
+  <div class="controls-row">
+    <button id="connectBtn">Start Hosting</button>
+    <span id="status" class="meta">Not connected</span>
+  </div>
 
-<!-- Recording Controls -->
-<button id="recordBtn">Start Recording</button>
-<a id="downloadLink" style="display:none; margin-left:10px;" download="recording.mp3">Download MP3</a>
+  <h3>Students in selected classroom</h3>
+  <div id="studentArea"></div>
 
-<hr>
-
-<p id="status">Connecting…</p>
-
-<h3>Student Activity</h3>
-<div id="studentArea"></div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.0/lame.min.js"></script>
 <script>
-/* =============================================================
-   CONNECT
-============================================================= */
-const socket = io();
+/* ================== CONFIG ================== */
+function wsUrl() {
+  if (location.hostname === "localhost" || location.protocol === "file:") return "ws://localhost:3000";
+  return `wss://${window.location.host}`;
+}
 
-socket.on("connect", () => {
-    document.getElementById("status").innerText = "Connected to server";
+/* ================== UI refs ================== */
+const classroomSelect = document.getElementById('classroomSelect');
+const monitorMode = document.getElementById('monitorMode');
+const soloKeyboard = document.getElementById('soloKeyboard');
+const volume = document.getElementById('volume');
+const volLabel = document.getElementById('volLabel');
+const connectBtn = document.getElementById('connectBtn');
+const statusEl = document.getElementById('status');
+const studentArea = document.getElementById('studentArea');
+
+/* populate solo keyboard select 1..15 */
+for (let i=1;i<=15;i++){ const o=document.createElement('option'); o.value=i; o.textContent=i; soloKeyboard.appendChild(o); }
+
+/* ================== Audio / recording infrastructure ================== */
+let audioCtx = null;
+let masterGain = null;
+let recordGain = null; // tap used for recording
+function initAudio(){
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = Number(volume.value)/100;
+  masterGain.connect(audioCtx.destination);
+
+  // recordGain sits before masterGain so we can capture what is going to master
+  recordGain = audioCtx.createGain();
+  recordGain.gain.value = 1;
+  recordGain.connect(masterGain);
+}
+volume.addEventListener('input', () => {
+  volLabel.innerText = volume.value;
+  if (masterGain && audioCtx) masterGain.gain.setValueAtTime(Number(volume.value)/100, audioCtx.currentTime || 0);
 });
 
-/* =============================================================
-   STUDENT UI BOXES
-============================================================= */
-const studentArea = document.getElementById("studentArea");
+/* ================== student storage ==================
+Each student tracked by key `${classroom}-${keyboard}`.
+student = {
+  classroom, keyboard,
+  boxEl, noteEl, miniEl,
+  mediaDest, mediaRecorder, recordedChunks, isRecording,
+  outGain, voices: Map(note->voice)
+}
+=============================================== */
 const students = new Map();
-const monitorSelect = document.getElementById("monitorSelect");
 
-function getStudentBox(studentId) {
-    if (students.has(studentId)) return students.get(studentId);
+function studentKey(classroom, keyboard){ return `${classroom}-${keyboard}`; }
 
-    const box = document.createElement("div");
-    box.className = "studentBox";
-    box.id = "student_" + studentId;
+/* create or return student object (but only add UI if classroom matches host selection) */
+function ensureStudent(classroom, keyboard){
+  const key = studentKey(classroom, keyboard);
+  if (students.has(key)) return students.get(key);
 
-    box.innerHTML = `
-        <h3>Student ${studentId}</h3>
-        <div>Last note: <span id="note_${studentId}">(none)</span></div>
-    `;
+  initAudio();
 
+  // DOM
+  const box = document.createElement('div');
+  box.className = 'studentBox';
+  box.id = 'box_' + key;
+  box.innerHTML = `
+    <div class="studentHeader">
+      <div><strong>Keyboard ${keyboard}</strong><div class="meta">Class ${classroom}</div></div>
+      <div>Last note: <span id="note_${key}" class="note">(none)</span></div>
+    </div>
+    <div class="miniPiano" id="mini_${key}"></div>
+    <div class="controls">
+      <button class="startRec small" data-key="${key}">Start Recording</button>
+      <button class="stopRec small" data-key="${key}" disabled>Stop & Download MP3</button>
+      <span class="meta" id="recStatus_${key}"></span>
+    </div>
+  `;
+
+  // audio nodes
+  const mediaDest = audioCtx.createMediaStreamDestination();
+  // outGain routes this student's synth to recordGain (through outGain -> recordGain)
+  const outGain = audioCtx.createGain();
+  outGain.gain.value = 1; // we'll mute/unmute based on monitor selections
+  outGain.connect(recordGain);
+
+  const st = {
+    classroom, keyboard, key,
+    boxEl: box, noteEl: box.querySelector('#note_' + key), miniEl: box.querySelector('#mini_' + key),
+    mediaDest, outGain,
+    mediaRecorder: null, recordedChunks: [], isRecording: false,
+    voices: new Map()
+  };
+
+  // build mini piano (C4..C5)
+  buildMiniPianoFor(st.key, st.miniEl);
+
+  // recording buttons
+  const startBtn = box.querySelector('.startRec');
+  const stopBtn = box.querySelector('.stopRec');
+  const recStatus = box.querySelector('#recStatus_' + key);
+  startBtn.addEventListener('click', () => startRecordingStudent(st, startBtn, stopBtn, recStatus));
+  stopBtn.addEventListener('click', () => stopRecordingStudent(st, startBtn, stopBtn, recStatus));
+
+  students.set(key, st);
+
+  // only append to DOM if same classroom as host selection
+  if (classroomSelect.value === String(classroom)) {
     studentArea.appendChild(box);
-    students.set(studentId, box);
+  }
 
-    // Also add to monitor dropdown
-    const option = document.createElement("option");
-    option.value = studentId;
-    option.innerText = "Student " + studentId;
-    monitorSelect.appendChild(option);
-
-    return box;
+  // Also add to monitor list if not already there (solo options are 1..15 static)
+  return st;
 }
 
-/* =============================================================
-   HOST AUDIO ENGINE
-============================================================= */
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-// Main output
-let volumeGain = audioCtx.createGain();
-volumeGain.gain.value = 0.8;
-
-// Recording tap
-let recordGain = audioCtx.createGain();
-recordGain.gain.value = 1;
-
-// Routing:
-// synth voices -> recordGain -> volumeGain -> speakers
-recordGain.connect(volumeGain).connect(audioCtx.destination);
-
-volSlider = document.getElementById("volume");
-volLabel = document.getElementById("volLabel");
-
-volSlider.oninput = () => {
-    volumeGain.gain.value = volSlider.value / 100;
-    volLabel.innerText = volSlider.value;
-};
-
-function midiToFreq(note) {
-    return 440 * Math.pow(2, (note - 69) / 12);
-}
-function midiToName(n) {
-    const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-    return names[n % 12] + (Math.floor(n / 12) - 1);
+/* remove student UI if they leave classroom or are out of selected classroom */
+function showStudentsForClassroom(classroom){
+  // clear current area then re-add matching student boxes
+  studentArea.innerHTML = '';
+  for (const [k, st] of students.entries()){
+    if (st.classroom === String(classroom)) studentArea.appendChild(st.boxEl);
+  }
 }
 
-// Voices per student
-let activeVoices = {};  // activeVoices[studentId][note] = osc/gain
-
-/* =============================================================
-   PLAY/STOP NOTE
-============================================================= */
-function playNote(studentId, midi, vel) {
-    if (!activeVoices[studentId]) activeVoices[studentId] = {};
-
-    // Only play if monitoring this student OR monitoring ALL
-    const monitor = monitorSelect.value;
-    const shouldPlay =
-        monitor === "ALL" || monitor === String(studentId);
-
-    if (!shouldPlay) return;
-
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-
-    osc.type = "sine";
-    osc.frequency.value = midiToFreq(midi);
-    gain.gain.value = (vel / 127) * 0.5;
-
-    osc.connect(gain).connect(recordGain);
-
-    osc.start();
-    activeVoices[studentId][midi] = { osc, gain };
-}
-
-function stopNote(studentId, midi) {
-    if (
-        activeVoices[studentId] &&
-        activeVoices[studentId][midi]
-    ) {
-        let v = activeVoices[studentId][midi];
-        v.gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
-        v.osc.stop(audioCtx.currentTime + 0.05);
-        delete activeVoices[studentId][midi];
+/* mini piano builder (C4..C5) */
+function buildMiniPianoFor(key, container){
+  container.innerHTML = '';
+  const start=60, end=72, whiteSteps=[0,2,4,5,7,9,11];
+  let whiteIndex=0;
+  for (let n=start;n<=end;n++){
+    const isWhite = whiteSteps.includes(n%12);
+    if (isWhite){
+      const w = document.createElement('div'); w.className='whiteMini'; w.dataset.note=n;
+      w.style.float='left';
+      container.appendChild(w);
+      whiteIndex++;
+    } else {
+      const b = document.createElement('div'); b.className='blackMini'; b.dataset.note=n;
+      b.style.left = ((whiteIndex-1)*26 + 18) + 'px';
+      container.appendChild(b);
     }
+  }
 }
 
-/* =============================================================
-   RECEIVE MIDI FROM SERVER
-============================================================= */
-socket.on("midi", (data) => {
-    const { studentId, midi } = data;
-    const [cmd, note, vel] = midi;
+/* highlight mini key */
+function highlightMini(key, note, on){
+  const st = students.get(key);
+  if (!st) return;
+  const el = Array.from(st.miniEl.querySelectorAll('[data-note]')).find(e => Number(e.dataset.note) === Number(note));
+  if (!el) return;
+  if (on) el.classList.add('active'); else el.classList.remove('active');
+}
 
-    const box = getStudentBox(studentId);
+/* ================== Voice handling ================== */
+/* create and route voices per student. Each voice connects to st.outGain and also to st.mediaDest via a recorder gain */
+function startVoiceForStudent(st, note, vel){
+  const key = `${note}`;
+  if (st.voices.has(key)) return;
+  const now = audioCtx.currentTime;
+  const freq = 440 * Math.pow(2, (note - 69)/12);
 
-    // Flash box
-    box.classList.add("flash");
-    setTimeout(() => box.classList.remove("flash"), 120);
+  const osc1 = audioCtx.createOscillator(); osc1.type='triangle'; osc1.frequency.setValueAtTime(freq, now);
+  const osc2 = audioCtx.createOscillator(); osc2.type='sawtooth'; osc2.frequency.setValueAtTime(freq*2.0, now);
 
-    // Update note label
-    document.getElementById("note_" + studentId).innerText = midiToName(note);
+  const filter = audioCtx.createBiquadFilter(); filter.type='lowpass'; filter.frequency.setValueAtTime(800 + (vel/127)*3000, now);
+  const gainNode = audioCtx.createGain(); const peak = 0.22 * (vel/127);
+  gainNode.gain.setValueAtTime(0, now); gainNode.gain.linearRampToValueAtTime(peak, now + 0.005); gainNode.gain.linearRampToValueAtTime(peak*0.6, now + 0.12);
 
-    if (cmd === 144 && vel > 0) playNote(studentId, note, vel);
-    if (cmd === 128 || (cmd === 144 && vel === 0)) stopNote(studentId, note);
+  osc1.connect(filter); osc2.connect(filter); filter.connect(gainNode);
+
+  // connect to outGain (for monitoring) and to mediaDest via recorder gain
+  gainNode.connect(st.outGain);
+  const recGain = audioCtx.createGain(); recGain.gain.value = 1.0;
+  gainNode.connect(recGain);
+  recGain.connect(st.mediaDest);
+
+  osc1.start(now); osc2.start(now);
+
+  st.voices.set(key, {osc1, osc2, filter, gainNode, recGain});
+}
+
+function stopVoiceForStudent(st, note){
+  const key = `${note}`;
+  const v = st.voices.get(key); if (!v) return;
+  const now = audioCtx.currentTime;
+  v.gainNode.gain.cancelScheduledValues(now);
+  v.gainNode.gain.setTargetAtTime(0.0001, now, 1.1);
+  try { v.osc1.stop(now + 1.5); v.osc2.stop(now + 1.5); } catch(e){}
+  setTimeout(()=> st.voices.delete(key), 1700);
+}
+
+/* ================== Recording per student (MediaRecorder -> MP3 via lamejs) ================== */
+function startRecordingStudent(st, startBtn, stopBtn, recStatusEl){
+  if (st.isRecording) return;
+  st.recordedChunks = [];
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus') ? 'audio/ogg;codecs=opus' : 'audio/webm');
+  try {
+    st.mediaRecorder = new MediaRecorder(st.mediaDest.stream, { mimeType: mime });
+  } catch(e){
+    alert('Recording not supported in this browser.');
+    return;
+  }
+  st.mediaRecorder.ondataavailable = ev => { if (ev.data && ev.data.size>0) st.recordedChunks.push(ev.data); };
+  st.mediaRecorder.onstop = async () => {
+    recStatusEl.textContent = 'Encoding MP3...';
+    try {
+      const blob = new Blob(st.recordedChunks, { type: st.mediaRecorder.mimeType });
+      const mp3Blob = await convertBlobToMp3(blob);
+      const url = URL.createObjectURL(mp3Blob);
+      const a = document.createElement('a'); a.href = url; a.download = `student-${st.classroom}-${st.keyboard}-${Date.now()}.mp3`; a.textContent = 'Download MP3'; a.className='downloadLink';
+      // append download link (remove previous if present)
+      const prev = st.boxEl.querySelector('.downloadLink'); if (prev) prev.remove();
+      st.boxEl.appendChild(a);
+      recStatusEl.textContent = 'Ready';
+    } catch (e) {
+      console.error(e); recStatusEl.textContent = 'Encode failed';
+    }
+  };
+  st.mediaRecorder.start(200);
+  st.isRecording = true; startBtn.disabled=true; stopBtn.disabled=false; recStatusEl.textContent='Recording...';
+}
+
+function stopRecordingStudent(st, startBtn, stopBtn, recStatusEl){
+  if (!st.isRecording || !st.mediaRecorder) return;
+  st.mediaRecorder.stop(); st.isRecording=false; startBtn.disabled=false; stopBtn.disabled=true; recStatusEl.textContent='Stopping...';
+}
+
+/* blob -> mp3 using offlineAudioContext decode + lamejs encode */
+async function convertBlobToMp3(blob){
+  const arrayBuffer = await blob.arrayBuffer();
+  if (!audioCtx) initAudio();
+  const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+  const sampleRate = 44100;
+  const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration*sampleRate), sampleRate);
+  const source = offline.createBufferSource();
+  // mix to mono
+  const ch = decoded.numberOfChannels;
+  const len = decoded.length;
+  const mix = new Float32Array(len);
+  for (let c=0;c<ch;c++){
+    const data = decoded.getChannelData(c);
+    for (let i=0;i<len;i++) mix[i] = (mix[i] || 0) + data[i] / ch;
+  }
+  const tmpBuf = offline.createBuffer(1, mix.length, decoded.sampleRate);
+  tmpBuf.copyToChannel(mix, 0);
+  source.buffer = tmpBuf; source.connect(offline.destination); source.start(0);
+  const rendered = await offline.startRendering();
+  const channelData = rendered.getChannelData(0);
+  const int16 = floatTo16BitPCM(channelData);
+  return encodeMp3(int16, sampleRate);
+}
+
+function floatTo16BitPCM(float32Array){
+  const l = float32Array.length; const out = new Int16Array(l);
+  for (let i=0;i<l;i++){ let s = Math.max(-1, Math.min(1, float32Array[i])); out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF; }
+  return out;
+}
+
+function encodeMp3(samplesInt16, sampleRate){
+  const mp3enc = new lamejs.Mp3Encoder(1, sampleRate, 128);
+  const blockSize = 1152;
+  const mp3Data = [];
+  for (let i=0;i<samplesInt16.length;i+=blockSize){
+    const chunk = samplesInt16.subarray(i, i+blockSize);
+    const mp3buf = mp3enc.encodeBuffer(chunk);
+    if (mp3buf.length > 0) mp3Data.push(new Uint8Array(mp3buf));
+  }
+  const tail = mp3enc.flush();
+  if (tail.length>0) mp3Data.push(new Uint8Array(tail));
+  return new Blob(mp3Data, { type: 'audio/mp3' });
+}
+
+/* ================== WebSocket handling ================== */
+let ws = null;
+
+connectBtn.addEventListener('click', () => {
+  const classroom = String(classroomSelect.value);
+  setStatus('Connecting to ' + wsUrl());
+  ws = new WebSocket(wsUrl());
+
+  ws.onopen = () => {
+    setStatus('Connected as host (class ' + classroom + ')');
+    // tell server we are host in this classroom (server may accept this)
+    ws.send(JSON.stringify({ type: 'host-join', classroom }));
+    initAudio();
+    showStudentsForClassroom(classroom);
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch(e){ console.warn('Bad ws msg', ev.data); return; }
+
+    // Student join acknowledgements
+    if (msg.type === 'student-join' || msg.type === 'joined') {
+      const classr = String(msg.classroom ?? msg.room ?? msg.roomId ?? msg.class);
+      const keyboard = String(msg.keyboard ?? msg.k ?? msg.id ?? msg.key);
+      ensureStudent(classr, keyboard);
+      // refresh visible students if classroom matches
+      if (classr === String(classroomSelect.value)) showStudentsForClassroom(classroomSelect.value);
+      return;
+    }
+
+    // Student MIDI variants
+    if (msg.type === 'student-midi' || msg.type === 'midi') {
+      // normalize
+      const classr = String(msg.classroom ?? msg.room ?? msg.classroomId ?? msg.class);
+      const keyboard = String(msg.keyboard ?? msg.k ?? msg.from ?? msg.key ?? msg.id);
+      // note + velocity might live as {note, velocity} or as msg.note/msg.velocity or as msg.midi array
+      let note, vel, cmd;
+      if (Array.isArray(msg.midi)) { cmd = msg.midi[0]; note = msg.midi[1]; vel = msg.midi[2]; }
+      else if (typeof msg.note !== 'undefined') { cmd = 144; note = msg.note; vel = msg.velocity ?? msg.vel ?? 127; }
+      else { return; }
+
+      // enforce classroom filter — only handle if matches selected classroom
+      if (classr !== String(classroomSelect.value)) return;
+
+      // ensure student exists and show UI
+      const st = ensureStudent(classr, keyboard);
+
+      // update UI & flash
+      st.noteEl.textContent = midiToName(note);
+      st.boxEl.classList.add('flash'); setTimeout(()=> st.boxEl.classList.remove('flash'), 120);
+
+      // highlight mini piano
+      highlightMini(st.key, note, true);
+      setTimeout(()=> highlightMini(st.key, note, false), 160);
+
+      // Decide whether to route to master (monitor) or just record
+      const mode = monitorMode.value;
+      const solo = String(soloKeyboard.value);
+      const monitorAll = (mode === 'CLASS');
+      const monitorSolo = (mode === 'SOLO' && solo !== '');
+
+      // If monitoring ALL or monitoring this student's keyboard -> ensure outGain to master is 1, else mute
+      if (monitorAll || (monitorSolo && solo === keyboard)) {
+        // set outGain to 1 so startVoice routes audible audio
+        st.outGain.gain.setValueAtTime(1.0, audioCtx.currentTime || 0);
+      } else {
+        st.outGain.gain.setValueAtTime(0.0, audioCtx.currentTime || 0);
+      }
+
+      // start/stop voices based on cmd
+      const status = cmd & 0xf0;
+      if ((status === 0x90 && vel > 0)) {
+        startVoiceForStudent(st, Number(note), Number(vel));
+      } else if (status === 0x80 || (status === 0x90 && vel === 0)) {
+        stopVoiceForStudent(st, Number(note));
+      }
+    }
+  };
+
+  ws.onclose = () => setStatus('Disconnected');
+  ws.onerror = (e) => { setStatus('WebSocket error'); console.error(e); };
 });
 
-/* =============================================================
-   MP3 RECORDING USING LAMEJS
-============================================================= */
-let recording = false;
-let mp3Encoder;
-let recordedChunks = [];
+/* ================== Helpers ================== */
+function setStatus(s){ statusEl.textContent = s; }
+function midiToName(n){
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  return names[n % 12] + (Math.floor(n / 12) - 1);
+}
 
-const recordBtn = document.getElementById("recordBtn");
-const downloadLink = document.getElementById("downloadLink");
+/* when classroom selection changes, refresh displayed students */
+classroomSelect.addEventListener('change', () => {
+  showStudentsForClassroom(classroomSelect.value);
+});
 
-// Capture audio stream
-const dest = audioCtx.createMediaStreamDestination();
-recordGain.connect(dest);
+/* when monitor mode or solo keyboard changes, immediately update outGains */
+monitorMode.addEventListener('change', () => {
+  updateMonitoringRouting();
+});
+soloKeyboard.addEventListener('change', () => {
+  updateMonitoringRouting();
+});
 
-let mediaRecorder = new MediaRecorder(dest.stream);
+function updateMonitoringRouting(){
+  const mode = monitorMode.value;
+  const solo = String(soloKeyboard.value);
+  for (const [k, st] of students.entries()){
+    const shouldPlay = (mode === 'CLASS') || (mode === 'SOLO' && String(st.keyboard) === solo);
+    if (st.outGain) st.outGain.gain.setValueAtTime(shouldPlay ? 1.0 : 0.0, audioCtx.currentTime || 0);
+  }
+}
 
-mediaRecorder.ondataavailable = (e) => {
-    recordedChunks.push(e.data);
-};
-
-mediaRecorder.onstop = () => {
-    const blob = new Blob(recordedChunks, { type: "audio/mp3" });
-    downloadLink.href = URL.createObjectURL(blob);
-    downloadLink.style.display = "inline-block";
-    recordedChunks = [];
-};
-
-recordBtn.onclick = () => {
-    if (!recording) {
-        recording = true;
-        downloadLink.style.display = "none";
-
-        mediaRecorder.start();
-        recordBtn.innerText = "Stop Recording";
-    } else {
-        recording = false;
-        mediaRecorder.stop();
-        recordBtn.innerText = "Start Recording";
-    }
-};
 </script>
 </body>
 </html>
