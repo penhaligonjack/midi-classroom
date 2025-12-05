@@ -1,171 +1,102 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="utf-8" />
-    <title>Host – MIDI Classroom</title>
-    <style>
-        body { font-family: Arial; }
-        .studentBox {
-            border: 2px solid #444;
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 8px;
-            background: #eee;
-            transition: background 0.15s;
-        }
-        .flash {
-            background: #ffdd99 !important;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <title>Host – MIDI Classroom (Recording)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:16px; max-width:1100px; margin:auto; }
+    .row { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
+    .studentBox { border:1px solid #bbb; padding:12px; border-radius:8px; background:#fafafa; margin-bottom:10px; position:relative; }
+    .studentHeader { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .note { font-weight:600; font-size:18px; }
+    .flash { animation: flashbg 140ms linear; }
+    @keyframes flashbg { from { background: #fff3d9 } to { background: #fafafa } }
+    button { padding:6px 10px; border-radius:6px; cursor:pointer; }
+    .controls { display:flex; gap:8px; margin-top:8px; }
+    .small { font-size:13px; padding:4px 8px; }
+    #studentArea { margin-top:16px; }
+    .meta { color:#666; font-size:13px; }
+  </style>
+
+  <!-- Lamejs for MP3 encoding -->
+  <script src="https://unpkg.com/lamejs@1.2.0/lame.min.js"></script>
 </head>
 <body>
-    <h2>Host – MIDI Classroom</h2>
+  <h1>Host — MIDI Classroom (Record per student)</h1>
 
-    <!-- CLASSROOM SELECT -->
-    <label>Choose Classroom:</label>
+  <div class="row">
+    <label>Classroom:</label>
     <select id="room">
-        <option value="77">Classroom 77</option>
-        <option value="78">Classroom 78</option>
+      <option value="77">77</option>
+      <option value="78">78</option>
     </select>
-    <br><br>
 
     <button id="connectBtn">Start Hosting</button>
-    <p id="status">Not connected</p>
 
-    <!-- VOLUME -->
-    <label>Volume: <span id="volLabel">80</span>%</label><br>
-    <input type="range" id="volume" min="0" max="100" value="80" />
-    <br><br>
+    <label>Volume: <span id="volLabel">85</span>%</label>
+    <input id="volume" type="range" min="0" max="100" value="85" style="width:220px">
+    <span id="status" style="margin-left:12px;">Not connected</span>
+  </div>
 
-    <h3>Student Activity</h3>
-    <div id="studentArea"></div>
+  <div id="studentArea"></div>
 
-    <script>
-        // Auto WebSocket URL
-        const PROD_WS = `wss://${window.location.host}`;
-        const LOCAL_WS = "ws://localhost:8080";
+<script>
+/* ========= Configuration & helpers ========= */
+const PROD_WS = `wss://${window.location.host}`;
+const LOCAL_WS = "ws://localhost:8080";
+function wsUrl(){ return (location.hostname === "localhost" || location.protocol === "file:") ? LOCAL_WS : PROD_WS; }
 
-        function selectWebSocketUrl() {
-            return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
-        }
+const studentArea = document.getElementById('studentArea');
+const statusEl = document.getElementById('status');
+const volSlider = document.getElementById('volume');
+const volLabel = document.getElementById('volLabel');
 
-        // UI references
-        const statusEl = document.getElementById("status");
-        const studentArea = document.getElementById("studentArea");
-        const volSlider = document.getElementById("volume");
-        const volLabel = document.getElementById("volLabel");
+function setStatus(s){ statusEl.textContent = s; }
 
-        function setStatus(s) { statusEl.textContent = s; }
+/* ========= Audio / synth / per-student routing ========= */
+let audioCtx = null;
+let masterGain = null;
 
-        // Piano engine
-        let audioCtx = null;
-        let volumeGain = null;
-        let activeVoices = {};
+// Map keyboardId (string/number) => student object
+// student = {
+//   keyboard: "1",
+//   boxEl, noteEl, mediaDest, mediaRecorder, recordedChunks: [], isRecording,
+//   voices: Map(note => {osc1, osc2, gainNode, stopTimer, release})
+// }
+const students = new Map();
 
-        function initAudio() {
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                volumeGain = audioCtx.createGain();
-                volumeGain.gain.value = volSlider.value / 100;
-                volumeGain.connect(audioCtx.destination);
-            }
-        }
+function initAudio(){
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = Number(volSlider.value) / 100;
+  masterGain.connect(audioCtx.destination);
+}
 
-        volSlider.oninput = () => {
-            volLabel.textContent = volSlider.value;
-            if (volumeGain) volumeGain.gain.value = volSlider.value / 100;
-        };
+volSlider.addEventListener('input', () => {
+  volLabel.innerText = volSlider.value;
+  if (masterGain) masterGain.gain.setValueAtTime(Number(volSlider.value)/100, audioCtx.currentTime || 0);
+});
 
-        function midiToFreq(note) {
-            return 440 * Math.pow(2, (note - 69) / 12);
-        }
+/* create UI box & per-student audio graph */
+function createStudent(keyboard) {
+  if (students.has(keyboard)) return students.get(keyboard);
 
-        function midiToName(n) {
-            const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-            return names[n % 12] + (Math.floor(n / 12) - 1);
-        }
+  // Dom box
+  const box = document.createElement('div');
+  box.className = 'studentBox';
+  box.id = 'student_' + keyboard;
 
-        function playNote(studentID, note, velocity) {
-            initAudio();
-
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-
-            osc.type = "sine";
-            osc.frequency.value = midiToFreq(note);
-            gain.gain.value = Math.max(0.05, velocity / 127);
-
-            osc.connect(gain);
-            gain.connect(volumeGain);
-            osc.start();
-
-            // Stop note after fixed time (simple polyphony)
-            osc.stop(audioCtx.currentTime + 0.6);
-        }
-
-        // --- Manage Student UI Boxes ---
-        const students = new Map();
-
-        function getStudentBox(keyboardNum) {
-            if (students.has(keyboardNum)) return students.get(keyboardNum);
-
-            // Create box
-            const box = document.createElement("div");
-            box.className = "studentBox";
-            box.id = "student_" + keyboardNum;
-            box.innerHTML = `
-                <h3>Keyboard ${keyboardNum}</h3>
-                <div>Last note: <span id="note_${keyboardNum}">(none)</span></div>
-            `;
-            studentArea.appendChild(box);
-            students.set(keyboardNum, box);
-            return box;
-        }
-
-        // --- WebSocket Setup ---
-        let ws;
-
-        document.getElementById("connectBtn").onclick = () => {
-            const room = document.getElementById("room").value;
-
-            ws = new WebSocket(selectWebSocketUrl());
-
-            ws.onopen = () => {
-                setStatus("Connected");
-                ws.send(JSON.stringify({ type: "join", role: "host", room }));
-            };
-
-            ws.onmessage = (msg) => {
-                const data = JSON.parse(msg.data);
-
-                if (data.type === "student-join") {
-                    const box = getStudentBox(data.keyboard);
-                    return;
-                }
-
-                if (data.type === "midi") {
-                    const { keyboard, midi } = data;
-                    const [cmd, note, vel] = midi;
-
-                    const box = getStudentBox(keyboard);
-
-                    // Update UI note name
-                    document.getElementById("note_" + keyboard).textContent = midiToName(note);
-
-                    // Flash indicator
-                    box.classList.add("flash");
-                    setTimeout(() => box.classList.remove("flash"), 120);
-
-                    // Play through speakers
-                    if (cmd === 144 && vel > 0) {
-                        playNote(keyboard, note, vel);
-                    }
-                }
-            };
-
-            ws.onclose = () => setStatus("Disconnected");
-            ws.onerror = () => setStatus("WebSocket error");
-        };
-    </script>
-</body>
-</html>
+  box.innerHTML = `
+    <div class="studentHeader">
+      <div>
+        <strong>Keyboard ${keyboard}</strong>
+        <div class="meta">ID: ${keyboard}</div>
+      </div>
+      <div>
+        <span class="note" id="note_${keyboard}">(none)</span>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="small startRec" data-key="${keyboard}">Start Recording</button>
+      <button class="small stopRec" data-key="${keyboard}" disabled>Stop & Download MP3</button>
