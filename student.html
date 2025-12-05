@@ -1,224 +1,225 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8" />
-<title>Student Piano</title>
+    <meta charset="utf-8" />
+    <title>Student – MIDI Classroom</title>
+    <style>
+        body { font-family: Arial; padding: 20px; }
 
-<style>
-    body {
-        font-family: Arial, sans-serif;
-        padding: 20px;
-    }
+        #keyboard {
+            position: relative;
+            width: 1400px;
+            height: 220px;
+            margin-top: 20px;
+            user-select: none;
+        }
 
-    #status {
-        font-weight: bold;
-        margin-bottom: 15px;
-    }
+        .white {
+            width: 40px;
+            height: 200px;
+            background: #fff;
+            border: 1px solid #333;
+            display: inline-block;
+            position: relative;
+            z-index: 1;
+        }
 
-    canvas {
-        border: 1px solid #444;
-        cursor: pointer;
-        user-select: none;
-    }
-</style>
+        .white.active {
+            background: #88c7ff;
+        }
+
+        .black {
+            width: 26px;
+            height: 120px;
+            background: #000;
+            position: absolute;
+            margin-left: -13px;
+            z-index: 2;
+            border-radius: 0 0 4px 4px;
+        }
+
+        .black.active {
+            background: #3399ff;
+        }
+
+        #status { margin-top: 10px; }
+    </style>
 </head>
+
 <body>
+    <h2>Student – MIDI Classroom</h2>
 
-<h2>Student Piano</h2>
-<div id="status">Connecting...</div>
+    <!-- Classroom -->
+    <label>Choose Classroom:</label>
+    <select id="room">
+        <option value="77">Classroom 77</option>
+        <option value="78">Classroom 78</option>
+    </select>
 
-<canvas id="piano" width="700" height="180"></canvas>
+    <br><br>
 
-<script src="/socket.io/socket.io.js"></script>
-<script>
-/* ============================================================
-   SOCKET CONNECTION
-============================================================ */
-const socket = io();
+    <!-- Keyboard number -->
+    <label>Your Keyboard Number:</label>
+    <select id="keyboardNum">
+        <script>
+            for (let i = 1; i <= 15; i++) {
+                document.write(`<option value="${i}">${i}</option>`);
+            }
+        </script>
+    </select>
 
-socket.on("connect", () => {
-    document.getElementById("status").innerText = "Connected";
-});
+    <br><br>
 
-function sendMidi(data) {
-    socket.emit("midi", data);
-}
+    <!-- Volume -->
+    <label>Volume: <span id="volLabel">80</span>%</label><br>
+    <input id="volume" type="range" min="0" max="100" value="80">
+    <br><br>
 
-/* ============================================================
-   SIMPLE AUDIO ENGINE (students hear themselves)
-============================================================ */
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-let oscillators = {};
+    <button id="connectBtn">Connect</button>
+    <div id="status">Not connected</div>
 
-function playLocalTone(midi) {
-    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+    <!-- On-screen keyboard -->
+    <div id="keyboard"></div>
 
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
+    <script>
+        /* ------------------------------------------------------
+           AUDIO ENGINE
+        ------------------------------------------------------*/
+        let audioCtx = null;
+        let masterGain = null;
 
-    osc.frequency.value = freq;
-    gain.gain.value = 0.2;
+        function initAudio() {
+            if (audioCtx) return;
 
-    osc.connect(gain).connect(audioCtx.destination);
-
-    osc.start();
-
-    oscillators[midi] = { osc, gain };
-}
-
-function stopLocalTone(midi) {
-    if (oscillators[midi]) {
-        oscillators[midi].gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
-        oscillators[midi].osc.stop(audioCtx.currentTime + 0.05);
-        delete oscillators[midi];
-    }
-}
-
-/* ============================================================
-   PIANO VISUAL + NOTE DETECTION
-============================================================ */
-
-const whiteKeys = [0, 2, 4, 5, 7, 9, 11];
-const blackKeys = [1, 3, 6, 8, 10];
-
-const TOTAL_KEYS = 25;          // C3 → C5 range
-const START_MIDI = 48;
-
-const piano = document.getElementById("piano");
-const ctx = piano.getContext("2d");
-
-const whiteKeyW = piano.width / TOTAL_KEYS;
-const whiteKeyH = piano.height;
-const blackKeyW = whiteKeyW * 0.6;
-const blackKeyH = piano.height * 0.6;
-
-let activeKeys = new Set();
-
-/* -----------------------------
-   Render keyboard
------------------------------ */
-function drawKeyboard() {
-    ctx.clearRect(0, 0, piano.width, piano.height);
-
-    // White keys
-    for (let i = 0; i < TOTAL_KEYS; i++) {
-        const midi = START_MIDI + i;
-
-        if (whiteKeys.includes(midi % 12)) {
-            ctx.fillStyle = activeKeys.has(midi) ? "#ffe8a3" : "white";
-            ctx.strokeStyle = "black";
-            ctx.fillRect(i * whiteKeyW, 0, whiteKeyW, whiteKeyH);
-            ctx.strokeRect(i * whiteKeyW, 0, whiteKeyW, whiteKeyH);
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.gain.value = volume.value / 100;
+            masterGain.connect(audioCtx.destination);
         }
-    }
 
-    // Black keys
-    for (let i = 0; i < TOTAL_KEYS; i++) {
-        const midi = START_MIDI + i;
+        volume.oninput = () => {
+            volLabel.textContent = volume.value;
+            if (masterGain) masterGain.gain.value = volume.value / 100;
+        };
 
-        if (blackKeys.includes(midi % 12)) {
-            ctx.fillStyle = activeKeys.has(midi) ? "#ffb347" : "black";
-            ctx.fillRect(
-                i * whiteKeyW - blackKeyW / 2,
-                0,
-                blackKeyW,
-                blackKeyH
-            );
+        function midiToFreq(note) {
+            return 440 * Math.pow(2, (note - 69) / 12);
         }
-    }
-}
 
-drawKeyboard();
+        function playLocal(note, velocity) {
+            initAudio();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
 
-/* -----------------------------
-   Mouse → MIDI note detection
------------------------------ */
-function midiFromMouse(x, y) {
-    // Black keys first
-    for (let i = 0; i < TOTAL_KEYS; i++) {
-        const midi = START_MIDI + i;
-        if (!blackKeys.includes(midi % 12)) continue;
+            osc.type = "sine";
+            osc.frequency.value = midiToFreq(note);
 
-        const pos = i * whiteKeyW;
-        if (
-            x > pos - blackKeyW / 2 &&
-            x < pos + blackKeyW / 2 &&
-            y < blackKeyH
-        ) {
-            return midi;
+            gain.gain.value = velocity / 127;
+            osc.connect(gain);
+            gain.connect(masterGain);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
         }
-    }
 
-    // Fall back to white key
-    const whiteIndex = Math.floor(x / whiteKeyW);
-    return START_MIDI + whiteIndex;
-}
+        /* ------------------------------------------------------
+           ON-SCREEN KEYBOARD
+        ------------------------------------------------------*/
+        const keyboardDiv = document.getElementById("keyboard");
+        const whiteNotes = [0, 2, 4, 5, 7, 9, 11];
 
-/* -----------------------------
-   Mouse Events
------------------------------ */
-let mouseDown = false;
+        let keyElements = {};
 
-piano.addEventListener("mousedown", (e) => {
-    mouseDown = true;
+        function buildKeyboard() {
+            keyboardDiv.innerHTML = "";
+            keyElements = {};
 
-    const r = piano.getBoundingClientRect();
-    const midi = midiFromMouse(e.clientX - r.left, e.clientY - r.top);
+            let whiteIndex = 0;
 
-    activeKeys.add(midi);
-    sendMidi([144, midi, 100]);   // NOTE ON
-    playLocalTone(midi);
+            for (let midi = 21; midi <= 108; midi++) {
+                const noteInOctave = midi % 12;
+                const isWhite = whiteNotes.includes(noteInOctave);
 
-    drawKeyboard();
-});
+                if (isWhite) {
+                    const key = document.createElement("div");
+                    key.className = "white";
+                    key.dataset.note = midi;
+                    key.style.left = (whiteIndex * 40) + "px";
+                    keyboardDiv.appendChild(key);
+                    keyElements[midi] = key;
+                    whiteIndex++;
+                } else {
+                    const key = document.createElement("div");
+                    key.className = "black";
+                    key.dataset.note = midi;
+                    key.style.left = (whiteIndex * 40 - 13) + "px";
+                    keyboardDiv.appendChild(key);
+                    keyElements[midi] = key;
+                }
+            }
+        }
+        buildKeyboard();
 
-piano.addEventListener("mouseup", () => {
-    mouseDown = false;
+        /* ------------------------------------------------------
+           WEBSOCKET + MIDI SEND
+        ------------------------------------------------------*/
+        let ws;
 
-    activeKeys.forEach((midi) => {
-        sendMidi([128, midi, 0]); // NOTE OFF
-        stopLocalTone(midi);
-    });
+        function wsURL() {
+            return (location.hostname === "localhost")
+                ? "ws://localhost:8080"
+                : "wss://" + window.location.host;
+        }
 
-    activeKeys.clear();
-    drawKeyboard();
-});
+        connectBtn.onclick = () => {
+            initAudio();
 
-piano.addEventListener("mouseleave", () => {
-    if (mouseDown) {
-        activeKeys.forEach((midi) => {
-            sendMidi([128, midi, 0]);
-            stopLocalTone(midi);
-        });
-        activeKeys.clear();
-        drawKeyboard();
-    }
-    mouseDown = false;
-});
+            ws = new WebSocket(wsURL());
 
-piano.addEventListener("mousemove", (e) => {
-    if (!mouseDown) return;
+            ws.onopen = () => {
+                status.textContent = "Connected";
 
-    const r = piano.getBoundingClientRect();
-    const midi = midiFromMouse(e.clientX - r.left, e.clientY - r.top);
+                ws.send(JSON.stringify({
+                    type: "join",
+                    role: "student",
+                    room: room.value,
+                    keyboard: keyboardNum.value
+                }));
+            };
 
-    // If finger moved to a new key
-    if (!activeKeys.has(midi)) {
-        activeKeys.forEach((midiOld) => {
-            sendMidi([128, midiOld, 0]);
-            stopLocalTone(midiOld);
-        });
+            ws.onerror = () => status.textContent = "WebSocket error";
+            ws.onclose  = () => status.textContent = "Disconnected";
+        };
 
-        activeKeys.clear();
-        activeKeys.add(midi);
+        /* ------------------------------------------------------
+           PLAY NOTE (clicking on-screen keys)
+        ------------------------------------------------------*/
+        function sendNoteOn(note) {
+            playLocal(note, 100);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: "midi",
+                    midi: [144, note, 100],
+                    keyboard: keyboardNum.value
+                }));
+            }
+        }
 
-        sendMidi([144, midi, 100]);
-        playLocalTone(midi);
+        for (let note in keyElements) {
+            const el = keyElements[note];
 
-        drawKeyboard();
-    }
-});
-</script>
+            el.onmousedown = () => {
+                el.classList.add("active");
+                sendNoteOn(parseInt(note));
+            };
 
+            el.onmouseup = () => {
+                el.classList.remove("active");
+            };
+
+            el.onmouseleave = () => {
+                el.classList.remove("active");
+            };
+        }
+    </script>
 </body>
 </html>
