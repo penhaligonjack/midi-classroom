@@ -1,62 +1,64 @@
-const http = require("http");
-const fs = require("fs");
+const express = require("express");
 const path = require("path");
-const WebSocket = require("ws");
+const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 8080;
+const app = express();
 
-const server = http.createServer((req, res) => {
-  let filePath = "." + req.url;
+// === Serve static files ===
+// This allows host.html, student.html, etc to load in the browser
+app.use(express.static(path.join(__dirname)));
 
-  if (filePath === "./") {
-    filePath = "./host.html"; 
-  }
-
-  const ext = path.extname(filePath);
-  let contentType = "text/html";
-
-  switch (ext) {
-    case ".js":
-      contentType = "text/javascript";
-      break;
-    case ".css":
-      contentType = "text/css";
-      break;
-    case ".json":
-      contentType = "application/json";
-      break;
-    case ".png":
-      contentType = "image/png";
-      break;
-    case ".jpg":
-      contentType = "image/jpg";
-      break;
-  }
-
-  fs.readFile(filePath, (err, content) => {
-    if (err) {
-      res.writeHead(404);
-      res.end("404 - File Not Found");
-    } else {
-      res.writeHead(200, { "Content-Type": contentType });
-      res.end(content);
-    }
-  });
+// Default route → open host page
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "host.html"));
 });
 
-// WebSocket server
-const wss = new WebSocket.Server({ server });
+// Start HTTP server
+const server = app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
+});
+
+// === WebSocket server ===
+const wss = new WebSocketServer({ server });
+const rooms = {};
 
 wss.on("connection", (ws) => {
-  ws.on("message", (message) => {
-    wss.clients.forEach((client) => {
-      if (client !== ws && client.readyState === WebSocket.OPEN) {
-        client.send(message.toString());
-      }
-    });
-  });
-});
+  ws.on("message", (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch (e) {
+      console.log("Invalid JSON:", raw);
+      return;
+    }
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    if (msg.type === "join") {
+      ws.role = msg.role;
+      ws.room = msg.room;
+      if (!rooms[msg.room]) rooms[msg.room] = { host: null, students: new Set() };
+
+      if (msg.role === "host") {
+        rooms[msg.room].host = ws;
+      } else {
+        rooms[msg.room].students.add(ws);
+      }
+      return;
+    }
+
+    if (msg.type === "midi") {
+      if (!ws.room) return;
+      const room = rooms[ws.room];
+      if (room && room.host && room.host.readyState === 1) {
+        room.host.send(JSON.stringify({ type: "midi", data: msg.data }));
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    if (ws.room && rooms[ws.room]) {
+      rooms[ws.room].students?.delete(ws);
+      if (rooms[ws.room].host === ws) rooms[ws.room].host = null;
+    }
+  });
 });
