@@ -18,8 +18,7 @@
     function connect() {
       const room = document.getElementById("room").value;
 
-      ws = new WebSocket("wss://YOUR-RAILWAY-URL-HERE"); 
-      // for local testing use: ws = new WebSocket("ws://localhost:8080");
+      const ws = new WebSocket("wss://midi-classroom-production.up.railway.app");
 
       ws.onopen = () => {
         document.getElementById("status").innerText = "Connected!";
