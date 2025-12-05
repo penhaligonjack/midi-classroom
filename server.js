@@ -1,77 +1,62 @@
-const express = require("express");
 const http = require("http");
-const WebSocket = require("ws");
+const fs = require("fs");
 const path = require("path");
+const WebSocket = require("ws");
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const PORT = process.env.PORT || 8080;
 
-let rooms = {}; // roomName → { host: ws, students: Set<ws> }
+const server = http.createServer((req, res) => {
+  let filePath = "." + req.url;
 
-wss.on("connection", (ws) => {
-  ws.on("message", (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (e) {
-      console.log("Invalid JSON:", raw);
-      return;
-    }
+  if (filePath === "./") {
+    filePath = "./host.html"; 
+  }
 
-    if (msg.type === "join") {
-      const { role, room } = msg;
-      ws.role = role;
-      ws.room = room;
+  const ext = path.extname(filePath);
+  let contentType = "text/html";
 
-      if (!rooms[room]) {
-        rooms[room] = { host: null, students: new Set() };
-      }
+  switch (ext) {
+    case ".js":
+      contentType = "text/javascript";
+      break;
+    case ".css":
+      contentType = "text/css";
+      break;
+    case ".json":
+      contentType = "application/json";
+      break;
+    case ".png":
+      contentType = "image/png";
+      break;
+    case ".jpg":
+      contentType = "image/jpg";
+      break;
+  }
 
-      if (role === "host") {
-        rooms[room].host = ws;
-      } else {
-        rooms[room].students.add(ws);
-      }
-
-      console.log(`Client joined room ${room} as ${role}`);
-      return;
-    }
-
-    // Relay MIDI
-    if (msg.type === "midi") {
-      const room = rooms[ws.room];
-      if (!room) return;
-
-      if (ws.role === "host") {
-        // Host sends to all students
-        room.students.forEach(s => {
-          if (s.readyState === WebSocket.OPEN) {
-            s.send(JSON.stringify(msg));
-          }
-        });
-      } else {
-        // Student sends to host
-        if (room.host && room.host.readyState === WebSocket.OPEN) {
-          room.host.send(JSON.stringify(msg));
-        }
-      }
-    }
-  });
-
-  ws.on("close", () => {
-    const room = rooms[ws.room];
-    if (!room) return;
-
-    if (ws.role === "host") {
-      rooms[ws.room].host = null;
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      res.writeHead(404);
+      res.end("404 - File Not Found");
     } else {
-      room.students.delete(ws);
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(content);
     }
   });
 });
 
-const PORT = process.env.PORT || 8080;
+// WebSocket server
+const wss = new WebSocket.Server({ server });
+
+wss.on("connection", (ws) => {
+  ws.on("message", (message) => {
+    wss.clients.forEach((client) => {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        client.send(message.toString());
+      }
+    });
+  });
+});
+
 server.listen(PORT, () => {
-  console.log("WebSocket server running on port " + PORT);
+  console.log(`Server running on port ${PORT}`);
 });
