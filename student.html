@@ -5,24 +5,37 @@
     <title>Student – MIDI Classroom</title>
 </head>
 <body>
-    <h2>Student Page</h2>
+    <h2>Student – MIDI Classroom</h2>
 
-    <label>Room Name:</label>
-    <input id="room" value="room1"><br><br>
+    <!-- ■■■ CLASSROOM SELECT ■■■ -->
+    <label>Choose Classroom:</label>
+    <select id="room">
+        <option value="77">Classroom 77</option>
+        <option value="78">Classroom 78</option>
+    </select>
+    <br><br>
 
-    <label>Volume:</label>
-    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8"><br><br>
+    <!-- ■■■ KEYBOARD NUMBER SELECT ■■■ -->
+    <label>Your Keyboard Number:</label>
+    <select id="keyboard">
+        <script>
+            // Generate 1–15
+            for (let i = 1; i <= 15; i++) {
+                document.write(`<option value="${i}">Keyboard ${i}</option>`);
+            }
+        </script>
+    </select>
+    <br><br>
 
-    <button id="connectBtn">Join Room & Start MIDI</button>
+    <button id="connectBtn">Join Session</button>
+
     <p id="status">Not connected</p>
 
-    <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
-
-    <!-- SoundFont Piano -->
-    <script src="https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/acoustic_grand_piano-mp3.js"></script>
+    <h3>Your Last Played Note</h3>
+    <div id="noteDisplay" style="font-size:22px;font-weight:bold;">(none)</div>
 
     <script>
-        // Auto WebSocket selection
+        // Auto WebSocket: production OR local
         const PROD_WS = `wss://${window.location.host}`;
         const LOCAL_WS = "ws://localhost:8080";
 
@@ -30,83 +43,77 @@
             return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
         }
 
-        // UI elements
+        // UI references
         const statusEl = document.getElementById("status");
-        const logEl = document.getElementById("log");
-        function log(...a) { logEl.textContent += a.join(" ") + "\n"; }
+        const noteDisplay = document.getElementById("noteDisplay");
+
         function setStatus(s) { statusEl.textContent = s; }
-
-        // WebAudio output
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioContext();
-
-        let piano = null;
-        let masterGain = audioCtx.createGain();
-        masterGain.gain.value = 0.8;
-        masterGain.connect(audioCtx.destination);
-
-        // Load SoundFont into WebAudio polyphonic engine
-        function loadPiano() {
-            return new Promise(resolve => {
-                piano = MIDI; // Soundfont library already loaded globally
-                MIDI.setContext(audioCtx);
-                resolve();
-            });
-        }
 
         let ws;
 
-        document.getElementById("volume").oninput = (e) => {
-            masterGain.gain.value = e.target.value;
-        };
-
-        document.getElementById("connectBtn").addEventListener("click", async () => {
+        document.getElementById("connectBtn").onclick = async () => {
             const room = document.getElementById("room").value;
-            await audioCtx.resume();
-            await loadPiano();
+            const keyboard = document.getElementById("keyboard").value;
 
             const wsUrl = selectWebSocketUrl();
             ws = new WebSocket(wsUrl);
 
-            setStatus("Connecting...");
-            log("Using WebSocket:", wsUrl);
-
-            ws.onopen = () => {
+            ws.onopen = async () => {
                 setStatus("Connected");
-                ws.send(JSON.stringify({ type: "join", role: "student", room }));
-                setupMIDI();
+
+                // Inform host that a student joined + their keyboard number
+                ws.send(JSON.stringify({
+                    type: "join",
+                    role: "student",
+                    room,
+                    keyboard
+                }));
+
+                await setupMIDI();
             };
 
-            ws.onerror = (e) => log("WS error:", e);
             ws.onclose = () => setStatus("Disconnected");
-        });
+            ws.onerror = () => setStatus("WebSocket error");
+        };
+
+        // Convert MIDI note numbers → C4, F#5 etc.
+        function midiToName(n) {
+            const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            const note = names[n % 12];
+            const octave = Math.floor(n / 12) - 1;
+            return note + octave;
+        }
 
         async function setupMIDI() {
             if (!navigator.requestMIDIAccess) {
-                setStatus("WebMIDI not supported (use Chrome)");
+                setStatus("WebMIDI not supported (use Chrome).");
                 return;
             }
 
             try {
                 const access = await navigator.requestMIDIAccess();
-                setStatus("MIDI Ready");
+                setStatus("MIDI ready — play your keyboard!");
 
                 for (let input of access.inputs.values()) {
                     input.onmidimessage = (msg) => {
-                        let [cmd, note, vel] = msg.data;
+                        const [cmd, note, vel] = msg.data;
 
-                        // Play locally (polyphonic)
-                        if (cmd === 144 && vel > 0) piano.noteOn(0, note, vel / 127, 0);
-                        if (cmd === 128 || (cmd === 144 && vel === 0)) piano.noteOff(0, note, 0);
+                        // Show note name
+                        if (cmd === 144 && vel > 0) {
+                            noteDisplay.textContent = midiToName(note);
+                        }
 
-                        // Send to host
+                        // Send raw MIDI to host
                         if (ws && ws.readyState === WebSocket.OPEN) {
-                            ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
+                            ws.send(JSON.stringify({
+                                type: "midi",
+                                data: msg.data
+                            }));
                         }
                     };
                 }
-            } catch (e) {
-                log("MIDI error:", e);
+            } catch (err) {
+                setStatus("Failed to get MIDI access");
             }
         }
     </script>
