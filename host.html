@@ -1,92 +1,183 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Host - MIDI Classroom</title>
+  <meta charset="utf-8" />
+  <title>Host – MIDI Classroom (Listener)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 20px; max-width:700px; }
+    label { display:block; margin-top:10px; }
+    .row { display:flex; gap:8px; align-items:center; }
+    #log { background:#f6f6f6; padding:8px; height:120px; overflow:auto; margin-top:10px; white-space:pre-wrap;}
+  </style>
 </head>
 <body>
-    <h1>Host – MIDI Classroom</h1>
+  <h1>Host — MIDI Classroom</h1>
 
-    <button id="connect">Start Session</button>
+  <div class="row">
+    <label>Room:</label>
+    <input id="room" value="room1" style="width:160px">
+    <button id="connectBtn">Connect as Host</button>
+    <span id="status" style="margin-left:10px;">Not connected</span>
+  </div>
 
-    <script>
-        let ws;
-        let audioCtx;
+  <label style="margin-top:14px;">Volume: <span id="volPct">80%</span></label>
+  <input id="volume" type="range" min="0" max="100" value="80" style="width:100%">
 
-        // -----------------------------------------------------
-        //              ACOUSTIC PIANO SYNTHESIZER
-        // -----------------------------------------------------
+  <div id="log"></div>
 
-        function playNote(midiMessage) {
-            const [command, note, velocity] = midiMessage;
+<script>
+/* ===== HOST PAGE: polyphonic piano synth + WS listener ===== */
 
-            // We only care about Note On (144) and Note Off (128)
-            if (command !== 144 && command !== 128) return;
+const logEl = document.getElementById('log');
+function log(...a){ console.log(...a); logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; }
 
-            // Create audio context if this is the first note
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
+const statusEl = document.getElementById('status');
+function setStatus(s){ statusEl.textContent = s; log('STATUS:', s); }
 
-            const now = audioCtx.currentTime;
+// Audio context + polyphony setup
+let audioCtx = null;
+const master = { gainNode: null };
+const voices = new Map(); // key -> {osc1, osc2, filter, gain, stopTimer}
 
-            // Convert MIDI note to frequency
-            const freq = 440 * Math.pow(2, (note - 69) / 12);
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    master.gainNode = audioCtx.createGain();
+    master.gainNode.gain.value = Number(document.getElementById('volume').value) / 100;
+    master.gainNode.connect(audioCtx.destination);
+  }
+}
 
-            // Create oscillator + gain (envelope)
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+// update master volume
+document.getElementById('volume').addEventListener('input', (ev) => {
+  const v = Number(ev.target.value)/100;
+  document.getElementById('volPct').innerText = Math.round(v*100) + '%';
+  if (master.gainNode) master.gainNode.gain.setValueAtTime(v, audioCtx.currentTime || 0);
+});
 
-            osc.frequency.setValueAtTime(freq, now);
-            osc.type = "sine"; // Base tone
+// create a voice for a note (polyphonic)
+function startVoice(note, velocity){
+  ensureAudio();
+  const now = audioCtx.currentTime;
+  const freq = 440 * Math.pow(2, (note - 69) / 12);
 
-            // Velocity sensitivity (0–1)
-            const vol = velocity / 127;
+  // main tone (triangle)
+  const osc1 = audioCtx.createOscillator();
+  osc1.type = 'triangle';
+  osc1.frequency.value = freq;
 
-            // Acoustic-piano style ADSR envelope
-            gain.gain.setValueAtTime(0, now);
-            gain.gain.linearRampToValueAtTime(vol, now + 0.01); // quick attack
-            gain.gain.linearRampToValueAtTime(vol * 0.6, now + 0.15); // soften slightly
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.0); // slow decay
+  // brightness layer (small sawtooth)
+  const osc2 = audioCtx.createOscillator();
+  osc2.type = 'sawtooth';
+  osc2.frequency.value = freq * 2; // octave harmonic for body
 
-            osc.connect(gain).connect(audioCtx.destination);
+  // filter to warm the tone
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  const brightness = 1000 + (velocity/127) * 4000;
+  filter.frequency.setValueAtTime(brightness, now);
+  filter.Q.value = 0.7;
 
-            osc.start(now);
-            osc.stop(now + 2.2); // remove after decay
-        }
+  // gain envelope node
+  const gain = audioCtx.createGain();
+  const peak = 0.25 * (velocity/127); // absolute loudness, scaled (host volume applied by master)
+  // ADSR-like envelope
+  const attack = 0.005;
+  const decay = 0.12;
+  const sustain = 0.6;
+  const release = 1.5;
 
-        // -----------------------------------------------------
-        //              WEBSOCKET CONNECTION
-        // -----------------------------------------------------
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(peak, now + attack);
+  gain.gain.linearRampToValueAtTime(peak * sustain, now + attack + decay);
 
-        document.getElementById("connect").onclick = () => {
+  // connect nodes
+  osc1.connect(filter);
+  osc2.connect(filter);
+  filter.connect(gain);
+  gain.connect(master.gainNode);
 
-            // Connect automatically to your Railway WebSocket
-            ws = new WebSocket(`wss://${window.location.host}`);
+  osc1.start(now);
+  osc2.start(now);
 
-            ws.onopen = () => {
-                console.log("Host connected.");
-            };
+  const key = note; // host only uses note as key (no channel handling)
+  voices.set(key, { osc1, osc2, filter, gain, release, stopTime: null });
 
-            ws.onmessage = (msg) => {
-                try {
-                    const data = JSON.parse(msg.data);
+  return key;
+}
 
-                    if (data.type === "midi") {
-                        playNote(data.data);
-                    }
-                } catch (err) {
-                    console.error("Invalid WS message", err);
-                }
-            };
+function releaseVoice(note){
+  if (!audioCtx) return;
+  const v = voices.get(note);
+  if (!v) return;
+  const now = audioCtx.currentTime;
+  // ramp to 0 using exponential ramp for natural decay
+  v.gain.gain.cancelScheduledValues(now);
+  v.gain.gain.setTargetAtTime(0.0001, now, v.release);
+  // stop oscillators after release+0.5s
+  const stopAt = now + v.release + 0.6;
+  try { v.osc1.stop(stopAt); v.osc2.stop(stopAt); } catch(e){}
+  // cleanup after stop
+  setTimeout(()=> voices.delete(note), Math.round((v.release+0.7)*1000));
+}
 
-            ws.onclose = () => {
-                console.log("WebSocket closed");
-            };
+// handle incoming MIDI message array [status,data1,data2]
+function handleIncomingMidi(data){
+  const status = data[0];
+  const note = data[1];
+  const velocity = data[2] || 0;
+  const cmd = status & 0xf0;
 
-            ws.onerror = (e) => {
-                console.error("WebSocket error", e);
-            };
-        };
-    </script>
+  if ((cmd === 0x90 && velocity > 0)) {
+    // note on
+    if (!audioCtx) ensureAudio();
+    startVoice(note, velocity);
+  } else if (cmd === 0x80 || (cmd === 0x90 && velocity === 0)) {
+    // note off
+    releaseVoice(note);
+  }
+}
+
+// WebSocket
+let ws = null;
+function wsUrl(){
+  if (location.hostname === 'localhost' || location.protocol === 'file:') return 'ws://localhost:8080';
+  return `wss://${window.location.host}`;
+}
+
+document.getElementById('connectBtn').addEventListener('click', () => {
+  const room = document.getElementById('room').value || 'room1';
+  setStatus('Connecting to ' + wsUrl());
+  ws = new WebSocket(wsUrl());
+
+  ws.onopen = () => {
+    setStatus('Connected as host (room: ' + room + ')');
+    // join message
+    ws.send(JSON.stringify({ type: 'join', role: 'host', room }));
+    // ensure audio context created after user gesture
+    ensureAudio();
+    log('Ready to receive MIDI from students');
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'midi' && Array.isArray(msg.data)) {
+        handleIncomingMidi(msg.data);
+      } else {
+        log('WS msg:', msg);
+      }
+    } catch (e) {
+      log('WS parse error', e);
+    }
+  };
+
+  ws.onclose = () => setStatus('Disconnected');
+  ws.onerror = (e) => {
+    setStatus('WebSocket error (see console)');
+    log('WS error', e);
+  };
+});
+</script>
 </body>
 </html>
