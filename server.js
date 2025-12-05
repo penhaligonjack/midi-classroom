@@ -1,142 +1,161 @@
-// -----------------------------
-// MIDI Classroom WebSocket Server
-// -----------------------------
-
+// --- SERVER SETUP ---
 const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
-const path = require("path");
-
 const app = express();
+const http = require("http");
 const server = http.createServer(app);
+const WebSocket = require("ws");
 
-// Serve static files (host.html, student.html)
-app.use(express.static(path.join(__dirname)));
-
-// Required for Railway
-const PORT = process.env.PORT || 3000;
-
-// WebSocket server
 const wss = new WebSocket.Server({ server });
 
-// Store connected clients
-let hosts = {};        // { classroom: ws }
-let students = {};     // { classroom: { keyboardID: ws } }
+// Serve static files
+app.use(express.static(__dirname + "/public"));
 
-function ensureClassroom(classroom) {
-    if (!students[classroom]) students[classroom] = {};
+app.get("/", (req, res) => res.sendFile(__dirname + "/public/host.html"));
+
+
+// ---- DATA MODEL ----
+// rooms = {
+//   77: {
+//     host: ws,
+//     students: { 1: ws, 2: ws, ... }
+//   },
+//   78: { ... }
+// }
+const rooms = {};
+
+// Make sure a room always exists
+function ensureRoom(room) {
+    if (!rooms[room]) {
+        rooms[room] = { host: null, students: {} };
+    }
 }
 
-// -----------------------------
-// WebSocket Connections
-// -----------------------------
 
+// ---- WebSocket Handling ----
 wss.on("connection", (ws) => {
-    console.log("Client connected.");
+    console.log("New WebSocket client connected.");
 
-    ws.on("message", (msg) => {
+    ws.on("message", (raw) => {
+        let msg;
         try {
-            const data = JSON.parse(msg);
-            const type = data.type;
+            msg = JSON.parse(raw);
+        } catch (e) {
+            console.log("Invalid JSON", raw);
+            return;
+        }
 
-            // -------------------------
-            // Host joins classroom
-            // -------------------------
-            if (type === "host-join") {
-                hosts[data.classroom] = ws;
-                ensureClassroom(data.classroom);
-                console.log(`Host connected to classroom ${data.classroom}`);
-                return;
+        const { type } = msg;
+
+        // ──────────────────────────────────────────────
+        // A student or host JOINING a room
+        // ──────────────────────────────────────────────
+        if (type === "join") {
+            const { role, room, keyboard } = msg;
+            ensureRoom(room);
+
+            // Save metadata on socket
+            ws.role = role;
+            ws.room = room;
+            ws.keyboard = keyboard || null;
+
+            if (role === "host") {
+                rooms[room].host = ws;
+                console.log(`Host joined room ${room}`);
             }
 
-            // -------------------------
-            // Student joins classroom
-            // -------------------------
-            if (type === "student-join") {
-                ensureClassroom(data.classroom);
-                students[data.classroom][data.keyboard] = ws;
+            if (role === "student") {
+                rooms[room].students[keyboard] = ws;
+                console.log(`Student ${keyboard} joined room ${room}`);
 
-                console.log(
-                    `Student keyboard ${data.keyboard} joined classroom ${data.classroom}`
-                );
-
-                // Acknowledge to student
-                ws.send(
-                    JSON.stringify({
-                        type: "joined",
-                        classroom: data.classroom,
-                        keyboard: data.keyboard,
-                    })
-                );
-
-                return;
-            }
-
-            // -------------------------
-            // Student → Host (MIDI)
-            // -------------------------
-            if (type === "student-midi") {
-                const host = hosts[data.classroom];
-                if (host && host.readyState === WebSocket.OPEN) {
-                    host.send(
+                // Notify host
+                if (rooms[room].host) {
+                    rooms[room].host.send(
                         JSON.stringify({
-                            type: "midi",
-                            keyboard: data.keyboard,
-                            note: data.note,
-                            velocity: data.velocity,
+                            type: "student-join",
+                            keyboard,
                         })
                     );
                 }
-                return;
             }
-
-            // -------------------------
-            // Host → Students (broadcast)
-            // -------------------------
-            if (type === "host-broadcast") {
-                ensureClassroom(data.classroom);
-
-                Object.values(students[data.classroom]).forEach((client) => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(
-                            JSON.stringify({
-                                type: "broadcast",
-                                payload: data.payload,
-                            })
-                        );
-                    }
-                });
-                return;
-            }
-        } catch (e) {
-            console.error("Invalid WebSocket message:", msg);
-        }
-    });
-
-    ws.on("close", () => {
-        console.log("Client disconnected.");
-
-        // Remove from hosts
-        for (const classroom of Object.keys(hosts)) {
-            if (hosts[classroom] === ws) {
-                delete hosts[classroom];
-            }
+            return;
         }
 
-        // Remove from students
-        for (const classroom of Object.keys(students)) {
-            for (const id of Object.keys(students[classroom])) {
-                if (students[classroom][id] === ws) {
-                    delete students[classroom][id];
+        // ──────────────────────────────────────────────
+        // STUDENT → SERVER → HOST  (Monitoring only)
+        // ──────────────────────────────────────────────
+        if (type === "student-midi") {
+            const { room, keyboard, midi } = msg;
+            ensureRoom(room);
+
+            // Forward ONLY to the host
+            const host = rooms[room].host;
+            if (host) {
+                host.send(
+                    JSON.stringify({
+                        type: "midi-from-student",
+                        keyboard,
+                        midi,
+                    })
+                );
+            }
+            return;
+        }
+
+        // ──────────────────────────────────────────────
+        // STUDENT PLAYS → Student must hear themselves
+        // ──────────────────────────────────────────────
+        if (type === "self-playback") {
+            ws.send(JSON.stringify({
+                type: "play-local",
+                midi: msg.midi
+            }));
+            return;
+        }
+
+
+        // ──────────────────────────────────────────────
+        // HOST PLAYS → send ONLY to selected students
+        // ──────────────────────────────────────────────
+        if (type === "host-midi") {
+            const { room, targets, midi } = msg;
+            ensureRoom(room);
+
+            targets.forEach(kb => {
+                const s = rooms[room].students[kb];
+                if (s && s.readyState === WebSocket.OPEN) {
+                    s.send(JSON.stringify({
+                        type: "play-from-host",
+                        midi
+                    }));
                 }
-            }
+            });
+            return;
+        }
+
+    });
+
+    // ──────────────────────────────────────────────
+    // HANDLE DISCONNECTS
+    // ──────────────────────────────────────────────
+    ws.on("close", () => {
+        const { room, role, keyboard } = ws;
+        if (!room) return;
+
+        ensureRoom(room);
+
+        if (role === "host") {
+            rooms[room].host = null;
+            console.log(`Host left room ${room}`);
+        }
+
+        if (role === "student") {
+            delete rooms[room].students[keyboard];
+            console.log(`Student ${keyboard} left room ${room}`);
         }
     });
 });
 
-// -----------------------------
-// Start server
-// -----------------------------
-server.listen(PORT, () => {
-    console.log("MIDI Classroom server running on port", PORT);
-});
+
+// --- START SERVER ---
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log("Server running on port", PORT));
