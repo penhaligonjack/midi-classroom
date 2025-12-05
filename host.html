@@ -3,28 +3,45 @@
 <head>
     <meta charset="utf-8" />
     <title>Host – MIDI Classroom</title>
+    <style>
+        body { font-family: Arial; }
+        .studentBox {
+            border: 2px solid #444;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 8px;
+            background: #eee;
+            transition: background 0.15s;
+        }
+        .flash {
+            background: #ffdd99 !important;
+        }
+    </style>
 </head>
 <body>
     <h2>Host – MIDI Classroom</h2>
 
-    <label>Room Name:</label>
-    <input id="room" value="room1"><br><br>
+    <!-- CLASSROOM SELECT -->
+    <label>Choose Classroom:</label>
+    <select id="room">
+        <option value="77">Classroom 77</option>
+        <option value="78">Classroom 78</option>
+    </select>
+    <br><br>
 
-    <label>Volume:</label>
-    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9"><br><br>
-
-    <button id="connectBtn">Start Session</button>
-
+    <button id="connectBtn">Start Hosting</button>
     <p id="status">Not connected</p>
 
-    <h3>Incoming MIDI Log</h3>
-    <pre id="log" style="background:#f6f6f6;padding:8px;height:200px;overflow-y:auto;"></pre>
+    <!-- VOLUME -->
+    <label>Volume: <span id="volLabel">80</span>%</label><br>
+    <input type="range" id="volume" min="0" max="100" value="80" />
+    <br><br>
 
-    <!-- SoundFont Piano -->
-    <script src="https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/acoustic_grand_piano-mp3.js"></script>
+    <h3>Student Activity</h3>
+    <div id="studentArea"></div>
 
     <script>
-        // Auto websocket: Railway production OR localhost dev
+        // Auto WebSocket URL
         const PROD_WS = `wss://${window.location.host}`;
         const LOCAL_WS = "ws://localhost:8080";
 
@@ -32,79 +49,122 @@
             return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
         }
 
-        // UI helpers
+        // UI references
         const statusEl = document.getElementById("status");
-        const logEl = document.getElementById("log");
+        const studentArea = document.getElementById("studentArea");
+        const volSlider = document.getElementById("volume");
+        const volLabel = document.getElementById("volLabel");
 
-        function log(...msg) {
-            logEl.textContent += msg.join(" ") + "\n";
-            logEl.scrollTop = logEl.scrollHeight;
-        }
         function setStatus(s) { statusEl.textContent = s; }
 
-        // WebAudio output
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const audioCtx = new AudioContext();
+        // Piano engine
+        let audioCtx = null;
+        let volumeGain = null;
+        let activeVoices = {};
 
-        let piano = null;
-        let masterGain = audioCtx.createGain();
-        masterGain.gain.value = 0.9;
-        masterGain.connect(audioCtx.destination);
-
-        // Load the SoundFont piano
-        function loadPiano() {
-            return new Promise(resolve => {
-                piano = MIDI; // Loaded from CDN
-                MIDI.setContext(audioCtx);
-                resolve();
-            });
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                volumeGain = audioCtx.createGain();
+                volumeGain.gain.value = volSlider.value / 100;
+                volumeGain.connect(audioCtx.destination);
+            }
         }
 
-        document.getElementById("volume").oninput = (e) => {
-            masterGain.gain.value = e.target.value;
+        volSlider.oninput = () => {
+            volLabel.textContent = volSlider.value;
+            if (volumeGain) volumeGain.gain.value = volSlider.value / 100;
         };
 
+        function midiToFreq(note) {
+            return 440 * Math.pow(2, (note - 69) / 12);
+        }
+
+        function midiToName(n) {
+            const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            return names[n % 12] + (Math.floor(n / 12) - 1);
+        }
+
+        function playNote(studentID, note, velocity) {
+            initAudio();
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            osc.type = "sine";
+            osc.frequency.value = midiToFreq(note);
+            gain.gain.value = Math.max(0.05, velocity / 127);
+
+            osc.connect(gain);
+            gain.connect(volumeGain);
+            osc.start();
+
+            // Stop note after fixed time (simple polyphony)
+            osc.stop(audioCtx.currentTime + 0.6);
+        }
+
+        // --- Manage Student UI Boxes ---
+        const students = new Map();
+
+        function getStudentBox(keyboardNum) {
+            if (students.has(keyboardNum)) return students.get(keyboardNum);
+
+            // Create box
+            const box = document.createElement("div");
+            box.className = "studentBox";
+            box.id = "student_" + keyboardNum;
+            box.innerHTML = `
+                <h3>Keyboard ${keyboardNum}</h3>
+                <div>Last note: <span id="note_${keyboardNum}">(none)</span></div>
+            `;
+            studentArea.appendChild(box);
+            students.set(keyboardNum, box);
+            return box;
+        }
+
+        // --- WebSocket Setup ---
         let ws;
 
-        document.getElementById("connectBtn").onclick = async () => {
-            await audioCtx.resume();
-            await loadPiano();
-
+        document.getElementById("connectBtn").onclick = () => {
             const room = document.getElementById("room").value;
-            const wsUrl = selectWebSocketUrl();
 
-            setStatus("Connecting...");
-            log("Connecting to:", wsUrl);
-
-            ws = new WebSocket(wsUrl);
+            ws = new WebSocket(selectWebSocketUrl());
 
             ws.onopen = () => {
                 setStatus("Connected");
-                log("Host connected.");
-
-                ws.send(JSON.stringify({
-                    type: "join",
-                    role: "host",
-                    room
-                }));
+                ws.send(JSON.stringify({ type: "join", role: "host", room }));
             };
 
-            ws.onmessage = (ev) => {
-                const msg = JSON.parse(ev.data);
+            ws.onmessage = (msg) => {
+                const data = JSON.parse(msg.data);
 
-                if (msg.type === "midi") {
-                    let [cmd, note, vel] = msg.data;
+                if (data.type === "student-join") {
+                    const box = getStudentBox(data.keyboard);
+                    return;
+                }
 
-                    log(`MIDI from student → cmd:${cmd} note:${note} vel:${vel}`);
+                if (data.type === "midi") {
+                    const { keyboard, midi } = data;
+                    const [cmd, note, vel] = midi;
 
-                    // PLAY SOUNDFONT PIANO
-                    if (cmd === 144 && vel > 0) piano.noteOn(0, note, vel / 127, 0);
-                    if (cmd === 128 || (cmd === 144 && vel === 0)) piano.noteOff(0, note, 0);
+                    const box = getStudentBox(keyboard);
+
+                    // Update UI note name
+                    document.getElementById("note_" + keyboard).textContent = midiToName(note);
+
+                    // Flash indicator
+                    box.classList.add("flash");
+                    setTimeout(() => box.classList.remove("flash"), 120);
+
+                    // Play through speakers
+                    if (cmd === 144 && vel > 0) {
+                        playNote(keyboard, note, vel);
+                    }
                 }
             };
 
-            ws.onerror = (e) => log("WebSocket error:", e);
             ws.onclose = () => setStatus("Disconnected");
+            ws.onerror = () => setStatus("WebSocket error");
         };
     </script>
 </body>
