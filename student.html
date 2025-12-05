@@ -13,34 +13,32 @@
   <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
 
   <script>
-    // ====== CONFIG ======
-    const PROD_WS = "wss://midi-classroom-production.up.railway.app";
-    const LOCAL_WS = "ws://localhost:8080";
-
+    // === WebSocket URL (automatic for local + production) ===
     function selectWebSocketUrl() {
-      if (location.hostname === "localhost" || location.protocol === "file:") {
-        return LOCAL_WS;
-      } else {
-        return PROD_WS;
-      }
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      return `${protocol}://${location.host}/ws`;
     }
 
     // ====== UI helpers ======
     const statusEl = document.getElementById("status");
     const logEl = document.getElementById("log");
+
     function log(...args) { 
       console.log(...args);
       logEl.textContent += args.join(" ") + "\n";
     }
+
     function setStatus(s) {
       statusEl.innerText = s;
       log("STATUS:", s);
     }
 
     let ws;
+
     document.getElementById("connectBtn").addEventListener("click", async () => {
       const room = document.getElementById("room").value || "room1";
       const wsUrl = selectWebSocketUrl();
+
       setStatus("Connecting to " + wsUrl + " ...");
       log("Using WS URL:", wsUrl);
 
@@ -58,32 +56,40 @@
       };
 
       ws.onerror = (e) => {
-        setStatus("WebSocket error (check console & Railway logs)");
+        setStatus("WebSocket error");
         log("WS error", e);
       };
     });
 
+    // ====== MIDI Setup ======
     async function setupMIDI() {
       if (!navigator.requestMIDIAccess) {
-        setStatus("WebMIDI not supported in this browser (use Chrome desktop if possible).");
+        setStatus("WebMIDI not supported (use Chrome desktop)");
         return;
       }
+
       try {
         const access = await navigator.requestMIDIAccess();
-        setStatus("MIDI access granted — connect keyboard and play.");
+        setStatus("MIDI enabled — connect keyboard and play");
+
+        // Listen to all MIDI input devices
         for (let input of access.inputs.values()) {
           input.onmidimessage = (msg) => {
             if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
+              ws.send(JSON.stringify({
+                type: "midi",
+                data: [...msg.data]
+              }));
             }
           };
         }
 
         access.onstatechange = (ev) => {
-          log("MIDI device change:", ev.port && ev.port.name);
+          log("MIDI device change:", ev.port?.name);
         };
+
       } catch (err) {
-        setStatus("Failed to get MIDI access: " + err);
+        setStatus("MIDI Failed: " + err);
         log(err);
       }
     }
