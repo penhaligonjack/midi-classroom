@@ -17,6 +17,17 @@
     .flash {
         background: #ffe6a3 !important;
     }
+
+    #monitorSelect {
+        padding: 6px;
+        margin-bottom: 20px;
+    }
+
+    #recordBtn {
+        padding: 8px 14px;
+        font-size: 15px;
+        cursor: pointer;
+    }
 </style>
 </head>
 <body>
@@ -29,17 +40,32 @@
     <input id="volume" type="range" min="0" max="100" value="80" />
 </div>
 
+<br>
+
+<!-- Student Monitor Selector -->
+<label><b>Monitor Student:</b></label><br>
+<select id="monitorSelect">
+    <option value="ALL">ALL (default)</option>
+</select>
+
+<br><br>
+
+<!-- Recording Controls -->
+<button id="recordBtn">Start Recording</button>
+<a id="downloadLink" style="display:none; margin-left:10px;" download="recording.mp3">Download MP3</a>
+
+<hr>
+
 <p id="status">Connecting…</p>
 
 <h3>Student Activity</h3>
 <div id="studentArea"></div>
 
-<!-- Socket.io -->
 <script src="/socket.io/socket.io.js"></script>
-
+<script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.0/lame.min.js"></script>
 <script>
 /* =============================================================
-   CONNECT TO SERVER
+   CONNECT
 ============================================================= */
 const socket = io();
 
@@ -52,6 +78,7 @@ socket.on("connect", () => {
 ============================================================= */
 const studentArea = document.getElementById("studentArea");
 const students = new Map();
+const monitorSelect = document.getElementById("monitorSelect");
 
 function getStudentBox(studentId) {
     if (students.has(studentId)) return students.get(studentId);
@@ -68,6 +95,12 @@ function getStudentBox(studentId) {
     studentArea.appendChild(box);
     students.set(studentId, box);
 
+    // Also add to monitor dropdown
+    const option = document.createElement("option");
+    option.value = studentId;
+    option.innerText = "Student " + studentId;
+    monitorSelect.appendChild(option);
+
     return box;
 }
 
@@ -76,60 +109,71 @@ function getStudentBox(studentId) {
 ============================================================= */
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+// Main output
 let volumeGain = audioCtx.createGain();
 volumeGain.gain.value = 0.8;
-volumeGain.connect(audioCtx.destination);
 
-// Volume slider
-const volSlider = document.getElementById("volume");
-const volLabel  = document.getElementById("volLabel");
+// Recording tap
+let recordGain = audioCtx.createGain();
+recordGain.gain.value = 1;
+
+// Routing:
+// synth voices -> recordGain -> volumeGain -> speakers
+recordGain.connect(volumeGain).connect(audioCtx.destination);
+
+volSlider = document.getElementById("volume");
+volLabel = document.getElementById("volLabel");
 
 volSlider.oninput = () => {
-    const vol = volSlider.value / 100;
-    volumeGain.gain.value = vol;
+    volumeGain.gain.value = volSlider.value / 100;
     volLabel.innerText = volSlider.value;
 };
 
-/* MIDI Utilities */
 function midiToFreq(note) {
     return 440 * Math.pow(2, (note - 69) / 12);
 }
-
 function midiToName(n) {
     const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
     return names[n % 12] + (Math.floor(n / 12) - 1);
 }
 
-/* Polyphonic Voice Storage */
-let activeVoices = {};  // { studentId: { note: {osc, gain} } }
+// Voices per student
+let activeVoices = {};  // activeVoices[studentId][note] = osc/gain
 
-/* Start note */
+/* =============================================================
+   PLAY/STOP NOTE
+============================================================= */
 function playNote(studentId, midi, vel) {
     if (!activeVoices[studentId]) activeVoices[studentId] = {};
+
+    // Only play if monitoring this student OR monitoring ALL
+    const monitor = monitorSelect.value;
+    const shouldPlay =
+        monitor === "ALL" || monitor === String(studentId);
+
+    if (!shouldPlay) return;
 
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
 
-    osc.type = "sine";  
+    osc.type = "sine";
     osc.frequency.value = midiToFreq(midi);
+    gain.gain.value = (vel / 127) * 0.5;
 
-    gain.gain.value = (vel / 127) * 0.5;  
-    osc.connect(gain).connect(volumeGain);
+    osc.connect(gain).connect(recordGain);
 
     osc.start();
-
     activeVoices[studentId][midi] = { osc, gain };
 }
 
-/* Stop note */
 function stopNote(studentId, midi) {
     if (
         activeVoices[studentId] &&
         activeVoices[studentId][midi]
     ) {
-        const voice = activeVoices[studentId][midi];
-        voice.gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
-        voice.osc.stop(audioCtx.currentTime + 0.05);
+        let v = activeVoices[studentId][midi];
+        v.gain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.03);
+        v.osc.stop(audioCtx.currentTime + 0.05);
         delete activeVoices[studentId][midi];
     }
 }
@@ -137,32 +181,63 @@ function stopNote(studentId, midi) {
 /* =============================================================
    RECEIVE MIDI FROM SERVER
 ============================================================= */
-
 socket.on("midi", (data) => {
-    // data = { studentId, midi: [cmd, note, vel] }
     const { studentId, midi } = data;
     const [cmd, note, vel] = midi;
 
     const box = getStudentBox(studentId);
 
-    // Flash yellow highlight
+    // Flash box
     box.classList.add("flash");
     setTimeout(() => box.classList.remove("flash"), 120);
 
-    // Update last note label
+    // Update note label
     document.getElementById("note_" + studentId).innerText = midiToName(note);
 
-    // Note on
-    if (cmd === 144 && vel > 0) {
-        playNote(studentId, note, vel);
-    }
-
-    // Note off
-    if (cmd === 128 || (cmd === 144 && vel === 0)) {
-        stopNote(studentId, note);
-    }
+    if (cmd === 144 && vel > 0) playNote(studentId, note, vel);
+    if (cmd === 128 || (cmd === 144 && vel === 0)) stopNote(studentId, note);
 });
 
+/* =============================================================
+   MP3 RECORDING USING LAMEJS
+============================================================= */
+let recording = false;
+let mp3Encoder;
+let recordedChunks = [];
+
+const recordBtn = document.getElementById("recordBtn");
+const downloadLink = document.getElementById("downloadLink");
+
+// Capture audio stream
+const dest = audioCtx.createMediaStreamDestination();
+recordGain.connect(dest);
+
+let mediaRecorder = new MediaRecorder(dest.stream);
+
+mediaRecorder.ondataavailable = (e) => {
+    recordedChunks.push(e.data);
+};
+
+mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: "audio/mp3" });
+    downloadLink.href = URL.createObjectURL(blob);
+    downloadLink.style.display = "inline-block";
+    recordedChunks = [];
+};
+
+recordBtn.onclick = () => {
+    if (!recording) {
+        recording = true;
+        downloadLink.style.display = "none";
+
+        mediaRecorder.start();
+        recordBtn.innerText = "Stop Recording";
+    } else {
+        recording = false;
+        mediaRecorder.stop();
+        recordBtn.innerText = "Start Recording";
+    }
+};
 </script>
 </body>
 </html>
