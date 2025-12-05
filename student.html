@@ -1,42 +1,90 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8" />
   <title>Student – MIDI Classroom</title>
 </head>
 <body>
   <h2>Student Page</h2>
-
   <label>Room Name:</label>
-  <input id="room" placeholder="enter room"><br><br>
-  <button onclick="connect()">Join Room</button>
-
+  <input id="room" placeholder="enter room" value="room1"><br><br>
+  <button id="connectBtn">Join Room & Start MIDI</button>
   <p id="status">Not connected</p>
+  <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
 
   <script>
-    let ws;
+    // ====== CONFIG ======
+    const PROD_WS = "wss://midi-classroom-production.up.railway.app";
+    const LOCAL_WS = "ws://localhost:8080";
 
-    function connect() {
-      const room = document.getElementById("room").value;
-
-      const ws = new WebSocket("wss://midi-classroom-production.up.railway.app");
-
-      ws.onopen = () => {
-        document.getElementById("status").innerText = "Connected!";
-        ws.send(JSON.stringify({ type: "join", role: "student", room }));
-        setupMIDI();
-      };
+    function selectWebSocketUrl() {
+      if (location.hostname === "localhost" || location.protocol === "file:") {
+        return LOCAL_WS;
+      } else {
+        return PROD_WS;
+      }
     }
 
-    async function setupMIDI() {
-      const access = await navigator.requestMIDIAccess();
-      const inputs = access.inputs.values();
+    // ====== UI helpers ======
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    function log(...args) { 
+      console.log(...args);
+      logEl.textContent += args.join(" ") + "\n";
+    }
+    function setStatus(s) {
+      statusEl.innerText = s;
+      log("STATUS:", s);
+    }
 
-      for (let input of inputs) {
-        input.onmidimessage = (msg) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
-          }
+    let ws;
+    document.getElementById("connectBtn").addEventListener("click", async () => {
+      const room = document.getElementById("room").value || "room1";
+      const wsUrl = selectWebSocketUrl();
+      setStatus("Connecting to " + wsUrl + " ...");
+      log("Using WS URL:", wsUrl);
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = async () => {
+        setStatus("Connected to server");
+        ws.send(JSON.stringify({ type: "join", role: "student", room }));
+        await setupMIDI();
+      };
+
+      ws.onclose = () => {
+        setStatus("Disconnected");
+        log("WS closed");
+      };
+
+      ws.onerror = (e) => {
+        setStatus("WebSocket error (check console & Railway logs)");
+        log("WS error", e);
+      };
+    });
+
+    async function setupMIDI() {
+      if (!navigator.requestMIDIAccess) {
+        setStatus("WebMIDI not supported in this browser (use Chrome desktop if possible).");
+        return;
+      }
+      try {
+        const access = await navigator.requestMIDIAccess();
+        setStatus("MIDI access granted — connect keyboard and play.");
+        for (let input of access.inputs.values()) {
+          input.onmidimessage = (msg) => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
+            }
+          };
+        }
+
+        access.onstatechange = (ev) => {
+          log("MIDI device change:", ev.port && ev.port.name);
         };
+      } catch (err) {
+        setStatus("Failed to get MIDI access: " + err);
+        log(err);
       }
     }
   </script>
