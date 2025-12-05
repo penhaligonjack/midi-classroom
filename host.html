@@ -1,104 +1,92 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>Host – MIDI Classroom</title>
+    <title>Host - MIDI Classroom</title>
 </head>
 <body>
-  <h2>Host Page</h2>
+    <h1>Host – MIDI Classroom</h1>
 
-  <label>Room Name:</label>
-  <input id="room" placeholder="enter room" value="room1"><br><br>
+    <button id="connect">Start Session</button>
 
-  <button id="connectBtn">Start Hosting</button>
+    <script>
+        let ws;
+        let audioCtx;
 
-  <p id="status">Not connected</p>
+        // -----------------------------------------------------
+        //              ACOUSTIC PIANO SYNTHESIZER
+        // -----------------------------------------------------
 
-  <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
+        function playNote(midiMessage) {
+            const [command, note, velocity] = midiMessage;
 
-  <script>
-    // ==== CONFIG =====
-    const PROD_WS = "wss://" + window.location.host;
-    const LOCAL_WS = "ws://localhost:8080";
+            // We only care about Note On (144) and Note Off (128)
+            if (command !== 144 && command !== 128) return;
 
-    function selectWebSocketUrl() {
-      if (location.hostname === "localhost") {
-        return LOCAL_WS;
-      } else {
-        return PROD_WS;
-      }
-    }
+            // Create audio context if this is the first note
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
 
-    // ==== UI helpers ====
-    const statusEl = document.getElementById("status");
-    const logEl = document.getElementById("log");
+            const now = audioCtx.currentTime;
 
-    function log(...args) {
-      console.log(...args);
-      logEl.textContent += args.join(" ") + "\n";
-    }
+            // Convert MIDI note to frequency
+            const freq = 440 * Math.pow(2, (note - 69) / 12);
 
-    function setStatus(s) {
-      statusEl.textContent = s;
-      log("STATUS:", s);
-    }
+            // Create oscillator + gain (envelope)
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
 
-    // ==== WebSocket & Audio ====
-    let ws;
-    let audioCtx;
+            osc.frequency.setValueAtTime(freq, now);
+            osc.type = "sine"; // Base tone
 
-    document.getElementById("connectBtn").addEventListener("click", () => {
-      const room = document.getElementById("room").value || "room1";
-      const wsUrl = selectWebSocketUrl();
+            // Velocity sensitivity (0–1)
+            const vol = velocity / 127;
 
-      setStatus("Connecting to " + wsUrl + " ...");
+            // Acoustic-piano style ADSR envelope
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(vol, now + 0.01); // quick attack
+            gain.gain.linearRampToValueAtTime(vol * 0.6, now + 0.15); // soften slightly
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.0); // slow decay
 
-      ws = new WebSocket(wsUrl);
+            osc.connect(gain).connect(audioCtx.destination);
 
-      ws.onopen = () => {
-        setStatus("Connected as host");
-        ws.send(JSON.stringify({ type: "join", role: "host", room }));
-      };
-
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.type === "midi") {
-            playNote(msg.data);
-          }
-        } catch (e) {
-          log("Invalid WS message:", e);
+            osc.start(now);
+            osc.stop(now + 2.2); // remove after decay
         }
-      };
 
-      ws.onclose = () => setStatus("Disconnected");
-      ws.onerror = () => setStatus("WebSocket error (check Railway logs)");
-    });
+        // -----------------------------------------------------
+        //              WEBSOCKET CONNECTION
+        // -----------------------------------------------------
 
-    function playNote(data) {
-      const [status, note, velocity] = data;
-      const command = status & 0xf0;
+        document.getElementById("connect").onclick = () => {
 
-      if (command === 0x90 && velocity > 0) {
-        if (!audioCtx)
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Connect automatically to your Railway WebSocket
+            ws = new WebSocket(`wss://${window.location.host}`);
 
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
+            ws.onopen = () => {
+                console.log("Host connected.");
+            };
 
-        const freq = 440 * Math.pow(2, (note - 69) / 12);
-        osc.frequency.value = freq;
-        osc.type = "sine";
+            ws.onmessage = (msg) => {
+                try {
+                    const data = JSON.parse(msg.data);
 
-        gain.gain.value = Math.max(0.02, velocity / 127);
+                    if (data.type === "midi") {
+                        playNote(data.data);
+                    }
+                } catch (err) {
+                    console.error("Invalid WS message", err);
+                }
+            };
 
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
+            ws.onclose = () => {
+                console.log("WebSocket closed");
+            };
 
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.3);
-      }
-    }
-  </script>
+            ws.onerror = (e) => {
+                console.error("WebSocket error", e);
+            };
+        };
+    </script>
 </body>
 </html>
