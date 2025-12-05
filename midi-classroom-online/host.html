@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Host – MIDI Classroom</title>
+</head>
+<body>
+  <h2>Host Page</h2>
+
+  <label>Room Name:</label>
+  <input id="room" placeholder="enter room"><br><br>
+  <button onclick="connect()">Start Hosting</button>
+
+  <p id="status">Not connected</p>
+
+  <script>
+    let ws;
+
+    function connect() {
+      const room = document.getElementById("room").value;
+
+      ws = new WebSocket("wss://YOUR-RAILWAY-URL-HERE");
+      // local testing: ws = new WebSocket("ws://localhost:8080");
+
+      ws.onopen = () => {
+        document.getElementById("status").innerText = "Connected!";
+        ws.send(JSON.stringify({ type: "join", role: "host", room }));
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "midi") playNote(msg.data);
+      };
+    }
+
+    function playNote(data) {
+      const [command, note, velocity] = data;
+
+      if (velocity === 0) return; // ignore note-offs for simplicity
+
+      const audioCtx = new AudioContext();
+      const osc = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.value = 440 * Math.pow(2, (note - 69) / 12);
+      gainNode.gain.value = velocity / 127;
+
+      osc.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.5);
+    }
+  </script>
+</body>
+</html>
