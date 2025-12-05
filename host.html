@@ -100,3 +100,295 @@ function createStudent(keyboard) {
     <div class="controls">
       <button class="small startRec" data-key="${keyboard}">Start Recording</button>
       <button class="small stopRec" data-key="${keyboard}" disabled>Stop & Download MP3</button>
+      <span class="meta" id="recStatus_${keyboard}"></span>
+    </div>
+  `;
+
+  studentArea.appendChild(box);
+
+  // Create per-student MediaStreamDestination to record this student's audio
+  initAudio();
+  const mediaDest = audioCtx.createMediaStreamDestination();
+
+  // For each student we will create voices which feed into both masterGain and mediaDest
+  const st = {
+    keyboard,
+    boxEl: box,
+    noteEl: box.querySelector('#note_' + keyboard),
+    mediaDest,
+    mediaRecorder: null,
+    recordedChunks: [],
+    isRecording: false,
+    voices: new Map()
+  };
+
+  // Buttons
+  const startBtn = box.querySelector('.startRec');
+  const stopBtn = box.querySelector('.stopRec');
+  const recStatus = box.querySelector('#recStatus_' + keyboard);
+
+  startBtn.addEventListener('click', () => startRecordingForStudent(st, startBtn, stopBtn, recStatus));
+  stopBtn.addEventListener('click', () => stopRecordingForStudent(st, startBtn, stopBtn, recStatus));
+
+  students.set(keyboard, st);
+  return st;
+}
+
+/* Start/stop recording using MediaRecorder; store chunks */
+function startRecordingForStudent(st, startBtn, stopBtn, recStatusEl) {
+  if (st.isRecording) return;
+  st.recordedChunks = [];
+
+  const options = { mimeType: '' };
+  // pick a mimeType likely supported
+  if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) options.mimeType = 'audio/webm;codecs=opus';
+  else if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) options.mimeType = 'audio/ogg;codecs=opus';
+  else options.mimeType = 'audio/webm';
+  try {
+    st.mediaRecorder = new MediaRecorder(st.mediaDest.stream, options);
+  } catch (e) {
+    console.error('MediaRecorder creation failed', e);
+    alert('Recording not supported in this browser.');
+    return;
+  }
+
+  st.mediaRecorder.ondataavailable = (ev) => {
+    if (ev.data && ev.data.size > 0) st.recordedChunks.push(ev.data);
+  };
+
+  st.mediaRecorder.onstop = async () => {
+    recStatusEl.textContent = 'Encoding MP3...';
+    // convert recorded blob -> mp3
+    const blob = new Blob(st.recordedChunks, { type: st.mediaRecorder.mimeType });
+    try {
+      const mp3Blob = await convertBlobToMp3(blob);
+      // create download link
+      const url = URL.createObjectURL(mp3Blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `student-${st.keyboard}-${Date.now()}.mp3`;
+      a.textContent = 'Download MP3';
+      // Enable stop button area to show link
+      stopBtnArea = st.boxEl.querySelector('.controls');
+      // remove existing download link if any
+      const prev = st.boxEl.querySelector('.downloadLink');
+      if (prev) prev.remove();
+      a.className = 'downloadLink';
+      st.boxEl.appendChild(a);
+      recStatusEl.textContent = 'Ready';
+    } catch (e) {
+      console.error('MP3 encode failed', e);
+      recStatusEl.textContent = 'Encode failed';
+    }
+  };
+
+  st.mediaRecorder.start(200); // 200ms timeslice
+  st.isRecording = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  recStatusEl.textContent = 'Recording...';
+}
+
+/* stop recorder and trigger MP3 encode in onstop handler */
+function stopRecordingForStudent(st, startBtn, stopBtn, recStatusEl) {
+  if (!st.isRecording || !st.mediaRecorder) return;
+  st.mediaRecorder.stop();
+  st.isRecording = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  recStatusEl.textContent = 'Stopping...';
+}
+
+/* Convert recorded WebM/Ogg Blob -> MP3 Blob using lamejs */
+async function convertBlobToMp3(blob) {
+  // 1) decode audio blob to AudioBuffer
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  // 2) get PCM data (mono mix)
+  const sampleRate = 44100; // lamejs supports 44.1k typical
+  // resample if needed
+  let offlineCtx = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * sampleRate), sampleRate);
+  const bufferSource = offlineCtx.createBufferSource();
+  // create mono buffer
+  const monoBuffer = offlineCtx.createBuffer(1, audioBuffer.length, audioBuffer.sampleRate);
+  // mixdown channels
+  const chCount = audioBuffer.numberOfChannels;
+  const tmp = new Float32Array(audioBuffer.length);
+  for (let c = 0; c < chCount; c++) {
+    const data = audioBuffer.getChannelData(c);
+    for (let i = 0; i < data.length; i++) tmp[i] = (tmp[i] || 0) + data[i] / chCount;
+  }
+  // copy into offlineCtx buffer resampling will occur when rendered
+  const targetBuffer = offlineCtx.createBuffer(1, tmp.length, audioBuffer.sampleRate);
+  targetBuffer.copyToChannel(tmp, 0);
+  bufferSource.buffer = targetBuffer;
+  bufferSource.connect(offlineCtx.destination);
+  bufferSource.start(0);
+  const rendered = await offlineCtx.startRendering(); // returns AudioBuffer at sampleRate
+  const channelData = rendered.getChannelData(0);
+
+  // 3) convert float32 [-1,1] -> 16-bit PCM
+  const samples = floatTo16BitPCM(channelData);
+
+  // 4) encode to mp3 using lamejs
+  const mp3Blob = encodeMp3(samples, sampleRate);
+  return mp3Blob;
+}
+
+function floatTo16BitPCM(float32Array) {
+  const len = float32Array.length;
+  const out = new Int16Array(len);
+  for (let i = 0; i < len; i++) {
+    let s = Math.max(-1, Math.min(1, float32Array[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return out;
+}
+
+function encodeMp3(samplesInt16, sampleRate) {
+  // lamejs expects Int16Array
+  const mp3enc = new lamejs.Mp3Encoder(1, sampleRate, 128); // mono, 128 kbps
+  const blockSize = 1152;
+  let mp3Data = [];
+  for (let i = 0; i < samplesInt16.length; i += blockSize) {
+    const chunk = samplesInt16.subarray(i, i + blockSize);
+    const mp3buf = mp3enc.encodeBuffer(chunk);
+    if (mp3buf.length > 0) mp3Data.push(new Uint8Array(mp3buf));
+  }
+  const endBuf = mp3enc.flush();
+  if (endBuf.length > 0) mp3Data.push(new Uint8Array(endBuf));
+  // concat
+  const blob = new Blob(mp3Data, { type: 'audio/mp3' });
+  return blob;
+}
+
+/* ========= Voice handling: per-student polyphony ========= */
+/* We'll create voices keyed by `${keyboard}_${note}` so note-off works per student. */
+
+function startVoiceForStudent(keyboard, note, velocity) {
+  initAudio();
+  const st = students.get(String(keyboard));
+  if (!st) return;
+  const key = `${keyboard}_${note}`;
+  // avoid duplicate start if already playing
+  if (st.voices.has(key)) return;
+
+  const now = audioCtx.currentTime;
+
+  // create two oscillators for richer tone
+  const osc1 = audioCtx.createOscillator();
+  const osc2 = audioCtx.createOscillator();
+  osc1.type = 'triangle';
+  osc2.type = 'sawtooth';
+  const freq = 440 * Math.pow(2, (note - 69) / 12);
+  osc1.frequency.setValueAtTime(freq, now);
+  osc2.frequency.setValueAtTime(freq * 1.002, now);
+
+  // filter
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(800 + (velocity/127)*3000, now);
+  filter.Q.value = 0.7;
+
+  // gain envelope
+  const gainNode = audioCtx.createGain();
+  const peak = 0.2 * (velocity/127);
+  gainNode.gain.setValueAtTime(0, now);
+  gainNode.gain.linearRampToValueAtTime(peak, now + 0.005);
+  gainNode.gain.linearRampToValueAtTime(peak * 0.6, now + 0.12);
+
+  // connect: osc -> filter -> split to masterGain and mediaDest channel
+  osc1.connect(filter);
+  osc2.connect(filter);
+  filter.connect(gainNode);
+
+  gainNode.connect(masterGain);
+  // Also connect to student's mediaDest via a separate gain
+  const recGain = audioCtx.createGain();
+  recGain.gain.value = 1.0;
+  gainNode.connect(recGain);
+  recGain.connect(st.mediaDest);
+
+  osc1.start(now);
+  osc2.start(now);
+
+  st.voices.set(key, { osc1, osc2, filter, gainNode, recGain });
+}
+
+function stopVoiceForStudent(keyboard, note) {
+  const st = students.get(String(keyboard));
+  if (!st) return;
+  const key = `${keyboard}_${note}`;
+  const v = st.voices.get(key);
+  if (!v) return;
+  const now = audioCtx.currentTime;
+  v.gainNode.gain.cancelScheduledValues(now);
+  v.gainNode.gain.setTargetAtTime(0.0001, now, 1.2); // release time
+  try { v.osc1.stop(now + 1.6); v.osc2.stop(now + 1.6); } catch(e){}
+  setTimeout(()=> st.voices.delete(key), 1800);
+}
+
+/* ========= WebSocket handling ========= */
+let ws = null;
+
+document.getElementById('connectBtn').addEventListener('click', () => {
+  const room = document.getElementById('room').value;
+  setStatus('Connecting to ' + wsUrl());
+  ws = new WebSocket(wsUrl());
+
+  ws.onopen = () => {
+    setStatus('Connected as host (room ' + room + ')');
+    ws.send(JSON.stringify({ type: 'join', role: 'host', room }));
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch(e){ console.warn('Invalid ws msg', e); return; }
+
+    // When a new student joins we may get a special message or we may just see their midi - handle both.
+    if (msg.type === 'student-join') {
+      // server may send this: {type:'student-join', keyboard: '5' }
+      createStudent(String(msg.keyboard));
+      return;
+    }
+
+    if (msg.type === 'midi') {
+      // Expect either {type:'midi', keyboard: '5', midi: [status, note, vel]} OR old {keyboard, midi}
+      const keyboard = String(msg.keyboard ?? msg.k ?? msg.from ?? 'unknown');
+      const midi = msg.midi ?? msg.data ?? msg.payload ?? msg;
+      if (!Array.isArray(midi)) return;
+
+      // Ensure student exists
+      createStudent(keyboard);
+
+      // update UI + play
+      const status = midi[0];
+      const note = midi[1];
+      const vel = midi[2] || 0;
+      const cmd = status & 0xf0;
+
+      // update note display and flash
+      const st = students.get(keyboard);
+      if (st && st.noteEl) {
+        st.noteEl.textContent = midiToName(note);
+        // flash
+        st.boxEl.classList.add('flash');
+        setTimeout(()=> st.boxEl.classList.remove('flash'), 120);
+      }
+
+      // handle note on/off
+      if ((cmd === 0x90 && vel > 0)) startVoiceForStudent(keyboard, note, vel);
+      if (cmd === 0x80 || (cmd === 0x90 && vel === 0)) stopVoiceForStudent(keyboard, note);
+    }
+
+    // other message types may be implemented by your server
+  };
+
+  ws.onclose = () => setStatus('Disconnected');
+  ws.onerror = (e) => { setStatus('WebSocket error'); console.error(e); };
+});
+
+</script>
+</body>
+</html>
