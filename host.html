@@ -1,61 +1,28 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>MIDI Host</title>
+    <title>Host - MIDI Classroom</title>
 </head>
 <body>
-<h2>MIDI Classroom – HOST</h2>
+    <h1>Host – MIDI Classroom</h1>
 
-<label>Room name:</label>
-<input id="room" value="room1">
-<button id="connectBtn">Connect</button>
+    <button id="connect">Start Session</button>
 
-<p id="status">Not connected</p>
+    <script>
+        let ws;
 
-<script>
-let ws = null;
+        document.getElementById("connect").onclick = () => {
+            // Automatically connects to your Railway deployment
+            ws = new WebSocket(`wss://${window.location.host}`);
 
-// ---- WebSocket URL selection ----
-function selectWebSocketUrl() {
-  if (location.hostname === "localhost") {
-    return "ws://localhost:8080";
-  }
-  return "wss://midi-classroom-production.up.railway.app";
-}
+            ws.onopen = () => {
+                console.log("Host connected.");
+            };
 
-function setStatus(t) {
-  document.getElementById("status").innerText = t;
-}
-
-function playNote(data) {
-  console.log("Received MIDI:", data);
-}
-
-document.getElementById("connectBtn").addEventListener("click", () => {
-  const room = document.getElementById("room").value || "room1";
-  const wsUrl = selectWebSocketUrl();
-
-  setStatus("Connecting to " + wsUrl + "...");
-
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    setStatus("Connected");
-    ws.send(JSON.stringify({ type: "join", role: "host", room }));
-  };
-
-  ws.onmessage = (ev) => {
-    try {
-      const msg = JSON.parse(ev.data);
-      if (msg.type === "midi") playNote(msg.data);
-    } catch (e) {
-      console.error("Invalid WS message", e);
-    }
-  };
-
-  ws.onclose = () => setStatus("Disconnected");
-  ws.onerror = () => setStatus("WebSocket error — check Railway logs");
-});
-</script>
+            ws.onmessage = (msg) => {
+                console.log("Received from student:", msg.data);
+            };
+        };
+    </script>
 </body>
 </html>
