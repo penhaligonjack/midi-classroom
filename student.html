@@ -1,99 +1,112 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Student - MIDI Classroom</title>
+    <meta charset="utf-8" />
+    <title>Student – MIDI Classroom</title>
 </head>
 <body>
-    <h1>Student – MIDI Classroom</h1>
+    <h2>Student Page</h2>
 
-    <button id="connect">Join Session</button>
+    <label>Room Name:</label>
+    <input id="room" value="room1"><br><br>
+
+    <label>Volume:</label>
+    <input id="volume" type="range" min="0" max="1" step="0.01" value="0.8"><br><br>
+
+    <button id="connectBtn">Join Room & Start MIDI</button>
     <p id="status">Not connected</p>
 
+    <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
+
+    <!-- SoundFont Piano -->
+    <script src="https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/acoustic_grand_piano-mp3.js"></script>
+
     <script>
-        let ws;
-        let audioCtx;
+        // Auto WebSocket selection
+        const PROD_WS = `wss://${window.location.host}`;
+        const LOCAL_WS = "ws://localhost:8080";
 
-        // -----------------------------------------------------
-        //           ACOUSTIC PIANO SOUND (same as host)
-        // -----------------------------------------------------
-
-        function playLocalPiano(midiMessage) {
-            const [command, note, velocity] = midiMessage;
-            if (command !== 144 && command !== 128) return;
-            if (velocity === 0) return; // NoteOn with vel 0 = NoteOff
-
-            if (!audioCtx) {
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            }
-
-            const now = audioCtx.currentTime;
-            const freq = 440 * Math.pow(2, (note - 69) / 12);
-
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-
-            osc.frequency.setValueAtTime(freq, now);
-            osc.type = "sine";
-
-            const vol = velocity / 127;
-
-            gain.gain.setValueAtTime(0, now);
-            gain.gain.linearRampToValueAtTime(vol, now + 0.01);
-            gain.gain.linearRampToValueAtTime(vol * 0.6, now + 0.15);
-            gain.gain.exponentialRampToValueAtTime(0.0001, now + 2.0);
-
-            osc.connect(gain).connect(audioCtx.destination);
-
-            osc.start(now);
-            osc.stop(now + 2.2);
+        function selectWebSocketUrl() {
+            return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
         }
 
-        // -----------------------------------------------------
-        //           CONNECT TO WEBSOCKET (Railway)
-        // -----------------------------------------------------
+        // UI elements
+        const statusEl = document.getElementById("status");
+        const logEl = document.getElementById("log");
+        function log(...a) { logEl.textContent += a.join(" ") + "\n"; }
+        function setStatus(s) { statusEl.textContent = s; }
 
-        document.getElementById("connect").onclick = async () => {
+        // WebAudio output
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContext();
 
-            ws = new WebSocket(`wss://${window.location.host}`);
+        let piano = null;
+        let masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0.8;
+        masterGain.connect(audioCtx.destination);
 
-            ws.onopen = async () => {
-                document.getElementById("status").innerText = "Connected to server";
+        // Load SoundFont into WebAudio polyphonic engine
+        function loadPiano() {
+            return new Promise(resolve => {
+                piano = MIDI; // Soundfont library already loaded globally
+                MIDI.setContext(audioCtx);
+                resolve();
+            });
+        }
 
-                // Students identify themselves
-                ws.send(JSON.stringify({ type: "join", role: "student", room: "room1" }));
+        let ws;
 
-                await setupMIDI();
-            };
-
-            ws.onerror = (e) => {
-                console.error("WS error", e);
-            };
+        document.getElementById("volume").oninput = (e) => {
+            masterGain.gain.value = e.target.value;
         };
 
-        // -----------------------------------------------------
-        //                  MIDI SETUP
-        // -----------------------------------------------------
+        document.getElementById("connectBtn").addEventListener("click", async () => {
+            const room = document.getElementById("room").value;
+            await audioCtx.resume();
+            await loadPiano();
+
+            const wsUrl = selectWebSocketUrl();
+            ws = new WebSocket(wsUrl);
+
+            setStatus("Connecting...");
+            log("Using WebSocket:", wsUrl);
+
+            ws.onopen = () => {
+                setStatus("Connected");
+                ws.send(JSON.stringify({ type: "join", role: "student", room }));
+                setupMIDI();
+            };
+
+            ws.onerror = (e) => log("WS error:", e);
+            ws.onclose = () => setStatus("Disconnected");
+        });
 
         async function setupMIDI() {
             if (!navigator.requestMIDIAccess) {
-                alert("WebMIDI not supported in this browser.");
+                setStatus("WebMIDI not supported (use Chrome)");
                 return;
             }
 
-            const access = await navigator.requestMIDIAccess();
+            try {
+                const access = await navigator.requestMIDIAccess();
+                setStatus("MIDI Ready");
 
-            for (let input of access.inputs.values()) {
-                input.onmidimessage = (msg) => {
-                    const midiData = [...msg.data];
+                for (let input of access.inputs.values()) {
+                    input.onmidimessage = (msg) => {
+                        let [cmd, note, vel] = msg.data;
 
-                    // 1) Play sound locally immediately
-                    playLocalPiano(midiData);
+                        // Play locally (polyphonic)
+                        if (cmd === 144 && vel > 0) piano.noteOn(0, note, vel / 127, 0);
+                        if (cmd === 128 || (cmd === 144 && vel === 0)) piano.noteOff(0, note, 0);
 
-                    // 2) Send note to host
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: "midi", data: midiData }));
-                    }
-                };
+                        // Send to host
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
+                        }
+                    };
+                }
+            } catch (e) {
+                log("MIDI error:", e);
             }
         }
     </script>
