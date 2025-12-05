@@ -3,11 +3,54 @@
 <head>
     <meta charset="utf-8" />
     <title>Student – MIDI Classroom</title>
+
+    <style>
+        body { font-family: Arial; }
+
+        /* PIANO STYLES */
+        #piano {
+            display: flex;
+            position: relative;
+            height: 180px;
+            margin-top: 20px;
+            user-select: none;
+        }
+
+        .white {
+            width: 40px;
+            height: 180px;
+            border: 1px solid #333;
+            background: white;
+            position: relative;
+            box-sizing: border-box;
+            z-index: 1;
+        }
+
+        .white.active {
+            background: #a3d8ff;
+        }
+
+        .black {
+            width: 26px;
+            height: 110px;
+            background: black;
+            position: absolute;
+            top: 0;
+            margin-left: -13px;
+            z-index: 2;
+            border-radius: 0 0 4px 4px;
+        }
+
+        .black.active {
+            background: #66aaff;
+        }
+    </style>
 </head>
 <body>
+
     <h2>Student – MIDI Classroom</h2>
 
-    <!-- ■■■ CLASSROOM SELECT ■■■ -->
+    <!-- CLASSROOM SELECT -->
     <label>Choose Classroom:</label>
     <select id="room">
         <option value="77">Classroom 77</option>
@@ -15,11 +58,10 @@
     </select>
     <br><br>
 
-    <!-- ■■■ KEYBOARD NUMBER SELECT ■■■ -->
+    <!-- KEYBOARD NUMBER SELECT -->
     <label>Your Keyboard Number:</label>
     <select id="keyboard">
         <script>
-            // Generate 1–15
             for (let i = 1; i <= 15; i++) {
                 document.write(`<option value="${i}">Keyboard ${i}</option>`);
             }
@@ -34,16 +76,18 @@
     <h3>Your Last Played Note</h3>
     <div id="noteDisplay" style="font-size:22px;font-weight:bold;">(none)</div>
 
+    <!-- PIANO DISPLAY -->
+    <h3>Your Keyboard</h3>
+    <div id="piano"></div>
+
     <script>
-        // Auto WebSocket: production OR local
+        // Auto WebSocket URL
         const PROD_WS = `wss://${window.location.host}`;
         const LOCAL_WS = "ws://localhost:8080";
-
         function selectWebSocketUrl() {
             return (location.hostname === "localhost") ? LOCAL_WS : PROD_WS;
         }
 
-        // UI references
         const statusEl = document.getElementById("status");
         const noteDisplay = document.getElementById("noteDisplay");
 
@@ -55,13 +99,11 @@
             const room = document.getElementById("room").value;
             const keyboard = document.getElementById("keyboard").value;
 
-            const wsUrl = selectWebSocketUrl();
-            ws = new WebSocket(wsUrl);
+            ws = new WebSocket(selectWebSocketUrl());
 
             ws.onopen = async () => {
                 setStatus("Connected");
 
-                // Inform host that a student joined + their keyboard number
                 ws.send(JSON.stringify({
                     type: "join",
                     role: "student",
@@ -76,17 +118,57 @@
             ws.onerror = () => setStatus("WebSocket error");
         };
 
-        // Convert MIDI note numbers → C4, F#5 etc.
+        // Convert MIDI note → C#4, etc.
         function midiToName(n) {
-            const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-            const note = names[n % 12];
-            const octave = Math.floor(n / 12) - 1;
-            return note + octave;
+            const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+            return names[n % 12] + (Math.floor(n / 12) - 1);
+        }
+
+        // Build on-screen piano (C3–C6)
+        const piano = document.getElementById("piano");
+        const whiteNotes = [0, 2, 4, 5, 7, 9, 11];
+
+        const noteToKey = {}; // map MIDI note → DOM element
+
+        function buildPiano() {
+            const start = 48; // C3
+            const end = 84;   // C6
+
+            for (let note = start; note <= end; note++) {
+                const isWhite = whiteNotes.includes(note % 12);
+
+                if (isWhite) {
+                    const key = document.createElement("div");
+                    key.className = "white";
+                    piano.appendChild(key);
+                    noteToKey[note] = key;
+                } else {
+                    const key = document.createElement("div");
+                    key.className = "black";
+
+                    // position above previous white key
+                    const whiteIndex = piano.children.length;
+                    key.style.left = (whiteIndex * 40) + "px";
+
+                    piano.appendChild(key);
+                    noteToKey[note] = key;
+                }
+            }
+        }
+
+        buildPiano();
+
+        // Flash piano keys
+        function highlight(note, on) {
+            const key = noteToKey[note];
+            if (!key) return;
+            if (on) key.classList.add("active");
+            else key.classList.remove("active");
         }
 
         async function setupMIDI() {
             if (!navigator.requestMIDIAccess) {
-                setStatus("WebMIDI not supported (use Chrome).");
+                setStatus("WebMIDI not supported.");
                 return;
             }
 
@@ -98,12 +180,16 @@
                     input.onmidimessage = (msg) => {
                         const [cmd, note, vel] = msg.data;
 
-                        // Show note name
+                        // Highlight the piano
                         if (cmd === 144 && vel > 0) {
+                            highlight(note, true);
                             noteDisplay.textContent = midiToName(note);
                         }
+                        if (cmd === 128 || (cmd === 144 && vel === 0)) {
+                            highlight(note, false);
+                        }
 
-                        // Send raw MIDI to host
+                        // Send to host
                         if (ws && ws.readyState === WebSocket.OPEN) {
                             ws.send(JSON.stringify({
                                 type: "midi",
@@ -117,5 +203,6 @@
             }
         }
     </script>
+
 </body>
 </html>
