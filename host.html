@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Host – MIDI Classroom (61-key)</title>
+<title>Host — MIDI Classroom (61-key)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
   :root { --white-w:40px; --white-h:180px; --black-w:26px; --black-h:120px; }
@@ -22,70 +22,64 @@
   .black .flat { display:block; font-size:11px; margin-top:2px; opacity:0.9; }
   .black.active{ background:#66aaff; }
   .studentList { margin-top:18px; display:flex; flex-direction:column; gap:12px; }
-  .studentBox { padding:10px; border-radius:8px; border:1px solid #ccc; background:#fafafa; }
-  .studentHeader { display:flex; gap:12px; align-items:center; justify-content:space-between; }
+  .studentBox { padding:10px; border-radius:8px; border:1px solid #ccc; background:#fafafa; display:flex; gap:12px; align-items:flex-start; }
+  .studentHeader { display:flex; flex-direction:column; gap:6px; }
   .studentControls{ display:flex; gap:8px; align-items:center; }
-  .miniKeyboard { overflow:auto; margin-top:8px; border-top:1px dashed #eee; padding-top:8px; }
-  .smallWhite { display:inline-block; width:20px; height:80px; border:1px solid #333; background:#fff; vertical-align:bottom; position:relative; }
-  .smallBlack { position:absolute; width:14px; height:56px; background:#111; border-radius:0 0 4px 4px; z-index:2; }
+  .miniKeyboard { overflow:auto; margin-top:8px; border-top:1px dashed #eee; padding-top:8px; flex:1; }
+  .small{ font-size:13px; padding:6px 8px; }
   .muted { opacity:0.35; }
-  .sectionTitle { font-weight:700; margin:8px 0; }
-  .controlsGrid { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  .small{ font-size:13px; padding:4px 6px; }
-  .checkboxList { display:flex; gap:6px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
-<h2>Host – MIDI Classroom (61-key)</h2>
+  <h2>Host — MIDI Classroom (61-key)</h2>
 
-<div class="topbar">
-  <label>Classroom:
-    <select id="room">
-      <option value="77">Classroom 77</option>
-      <option value="78">Classroom 78</option>
-    </select>
-  </label>
+  <div class="topbar">
+    <label>Classroom:
+      <select id="room"><option value="77">77</option><option value="78">78</option></select>
+    </label>
 
-  <button id="connectBtn">Connect</button>
-  <span id="status">Not connected</span>
+    <button id="connectBtn" class="small">Connect</button>
+    <span id="status">Not connected</span>
 
-  <label style="margin-left:12px">Host Volume:
-    <input id="hostVolume" type="range" min="0" max="100" value="90" style="vertical-align:middle;">
-  </label>
-</div>
+    <label style="margin-left:12px">Host Volume:
+      <input id="hostVolume" type="range" min="0" max="100" value="90" style="vertical-align:middle;">
+    </label>
+  </div>
 
-<!-- Host keyboard targets and keyboard -->
-<div style="margin-top:12px;">
-  <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
-    <div>
-      <strong>Send host audio to:</strong>
-      <div id="targetList" class="checkboxList" style="margin-top:6px;"></div>
+  <div style="margin-top:12px;">
+    <div style="display:flex; gap:12px; align-items:center; margin-bottom:8px;">
+      <div>
+        <strong>Send host audio to:</strong>
+        <div id="targetList" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;"></div>
+      </div>
+      <div style="margin-left:auto;">
+        <button id="selectAll" class="small">Select All</button>
+        <button id="clearTargets" class="small">Clear</button>
+      </div>
     </div>
 
-    <div style="margin-left:auto;">
-      <button id="selectAll" class="small">Select All</button>
-      <button id="clearTargets" class="small">Clear</button>
+    <div id="hostKeyboardWrap">
+      <div id="hostKeyboard"></div>
     </div>
   </div>
 
-  <div id="hostKeyboardWrap">
-    <div id="hostKeyboard"></div>
-  </div>
-</div>
-
-<div class="sectionTitle">Connected Students</div>
-<div id="studentContainer" class="studentList"></div>
+  <div style="margin-top:18px; font-weight:700;">Connected Students</div>
+  <div id="studentContainer" class="studentList"></div>
 
 <script>
-/* ----------------- CONFIG ----------------- */
-// 61-key host keyboard range: C2 (36) -> C7 (96)
-const START_MIDI = 36;
-const END_MIDI = 96;
+/* ---------- Config ---------- */
+const START_MIDI = 36; // C2
+const END_MIDI   = 96; // C7 (61 keys)
 const WHITE_STEPS = [0,2,4,5,7,9,11];
 const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const WS_URL = (location.hostname === 'localhost' || location.protocol === 'file:') ? "ws://localhost:3000" : "wss://" + location.host;
 
-/* ----------------- UI REFS ----------------- */
+function wsURL(){
+  if (location.protocol === 'file:') return 'ws://localhost:8080';
+  // server runs on same host & port as served pages
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+}
+
+/* ---------- UI refs ---------- */
 const roomEl = document.getElementById('room');
 const connectBtn = document.getElementById('connectBtn');
 const statusEl = document.getElementById('status');
@@ -93,82 +87,62 @@ const hostKeyboardDiv = document.getElementById('hostKeyboard');
 const targetListDiv = document.getElementById('targetList');
 const studentContainer = document.getElementById('studentContainer');
 const hostVolumeEl = document.getElementById('hostVolume');
+const selectAllBtn = document.getElementById('selectAll');
+const clearTargetsBtn = document.getElementById('clearTargets');
 
 let ws = null;
 
-/* ----------------- AUDIO (host) ----------------- */
+/* ---------- Audio ---------- */
 let audioCtx = null;
 let masterGain = null;
-// host monitoring volume per student stored in student objects
-
 function initAudio(){
   if (audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   masterGain = audioCtx.createGain();
-  masterGain.gain.value = hostVolumeEl.value/100;
+  masterGain.gain.value = hostVolumeEl.value / 100;
   masterGain.connect(audioCtx.destination);
 }
-hostVolumeEl.addEventListener('input', () => {
+hostVolumeEl.addEventListener('input', ()=> {
   if (masterGain) masterGain.gain.setValueAtTime(hostVolumeEl.value/100, audioCtx.currentTime || 0);
 });
 
-/* polyphonic voice maps: sourceKey -> map(note -> {osc,gain}) 
-   sourceKey is either 'host' or 'student:<keyboardNumber>' */
-const voices = new Map();
+/* polyphony stores */
+const voices = new Map(); // sourceKey -> Map(note -> {osc,gain})
 
-function createVoiceMap(sourceKey){
-  if (!voices.has(sourceKey)) voices.set(sourceKey, new Map());
-  return voices.get(sourceKey);
-}
-function playLocal(sourceKey, note, vel = 100, volumeMultiplier=1.0){
+function playLocal(sourceKey, note, vel=100, volumeMultiplier=1.0){
   initAudio();
-  const freq = 440 * Math.pow(2, (note - 69)/12);
+  if (!voices.has(sourceKey)) voices.set(sourceKey, new Map());
+  const map = voices.get(sourceKey);
+  if (map.has(note)) return;
+  const freq = 440 * Math.pow(2,(note-69)/12);
+  const osc = audioCtx.createOscillator(); osc.type='sine'; osc.frequency.value = freq;
+  const g = audioCtx.createGain(); g.gain.value = 0;
+  osc.connect(g); g.connect(masterGain);
   const vm = Math.max(0.01, (vel/127) * 0.4 * volumeMultiplier);
-  const osc = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
-  osc.type = "sine";
-  osc.frequency.value = freq;
-  g.gain.setValueAtTime(0, audioCtx.currentTime);
   g.gain.linearRampToValueAtTime(vm, audioCtx.currentTime + 0.002);
-  osc.connect(g);
-  g.connect(masterGain);
   osc.start();
-  const map = createVoiceMap(sourceKey);
   map.set(note, {osc,g});
 }
 function stopLocal(sourceKey, note){
-  const map = voices.get(sourceKey);
-  if (!map) return;
-  const v = map.get(note);
-  if (!v) return;
-  const now = audioCtx.currentTime;
-  v.gain.gain.cancelScheduledValues(now);
-  v.gain.gain.setTargetAtTime(0.0001, now, 0.02);
-  try { v.osc.stop(now + 0.03); } catch(e){}
+  const map = voices.get(sourceKey); if (!map) return;
+  const v = map.get(note); if (!v) return;
+  try { v.gain.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.02); v.osc.stop(audioCtx.currentTime + 0.05); } catch(e){}
   map.delete(note);
 }
 
-/* ----------------- KEYBOARD RENDER (61 keys) ----------------- */
-const whiteKeyW = 40;
-const whiteKeyH = 180;
-const blackKeyW = 26;
-const blackKeyH = 120;
+/* ---------- Host keyboard build ---------- */
+const whiteKeyW = 40, whiteKeyH = 180, blackKeyW = 26, blackKeyH = 120;
 const keys = {}; // midi -> {el,isWhite}
 
-function buildHostKeyboard(container){
+function buildKeyboard(container){
   container.innerHTML = '';
-  // create whites left-to-right
   const whites = [];
-  for(let m=START_MIDI; m<=END_MIDI; m++){
+  for(let m=START_MIDI;m<=END_MIDI;m++){
     const step = m % 12;
     const isWhite = WHITE_STEPS.includes(step);
     if(isWhite){
-      const el = document.createElement('div');
-      el.className = 'white';
-      el.dataset.midi = m;
-      const label = document.createElement('div');
-      label.className = 'label';
-      label.textContent = NOTE_NAMES[m % 12] + Math.floor(m/12 - 1);
+      const el = document.createElement('div'); el.className='white'; el.dataset.midi=m;
+      const label = document.createElement('div'); label.className='label'; label.textContent = NOTE_NAMES[m%12] + Math.floor(m/12 - 1);
       el.appendChild(label);
       container.appendChild(el);
       whites.push({m,el});
@@ -177,21 +151,16 @@ function buildHostKeyboard(container){
       keys[m] = {el:null,isWhite:false};
     }
   }
-  // container width = whites * width
   container.style.width = (whites.length * whiteKeyW) + 'px';
-  container.style.height = (whiteKeyH + 36) + 'px';
   container.style.position = 'relative';
-  // add black keys
-  for (let i=0;i<whites.length;i++){
+  // blacks
+  for(let i=0;i<whites.length;i++){
     const leftWhite = whites[i];
     const candidate = leftWhite.m + 1;
     const mod = candidate % 12;
-    if ([1,3,6,8,10].includes(mod) && candidate <= END_MIDI){
-      const b = document.createElement('div');
-      b.className = 'black';
-      b.dataset.midi = candidate;
-      // sharp above, flat below deltas included inside black if needed
-      const sharp = document.createElement('span'); sharp.className='sharp'; sharp.textContent = NOTE_NAMES[candidate % 12];
+    if([1,3,6,8,10].includes(mod) && candidate <= END_MIDI){
+      const b = document.createElement('div'); b.className='black'; b.dataset.midi=candidate;
+      const sharp = document.createElement('span'); sharp.className='sharp'; sharp.textContent = NOTE_NAMES[candidate%12];
       const flat = document.createElement('span'); flat.className='flat'; flat.textContent = NOTE_NAMES[(candidate-1)%12] + 'b';
       b.appendChild(sharp); b.appendChild(flat);
       const left = leftWhite.el.offsetLeft + whiteKeyW - (blackKeyW/2);
@@ -200,344 +169,207 @@ function buildHostKeyboard(container){
       keys[candidate].el = b;
     }
   }
-
-  // attach handlers for host playing
-  Object.entries(keys).forEach(([k, v])=>{
-    if (!v.el) return;
-    v.el.addEventListener('pointerdown', hostKeyDown);
-    v.el.addEventListener('pointerup', hostKeyUp);
-    v.el.addEventListener('pointerleave', hostKeyUp);
-  });
+  // attach host pointer handlers
+  Object.entries(keys).forEach(([k,v])=>{ if(!v.el) return; v.el.addEventListener('pointerdown', hostKeyDown); v.el.addEventListener('pointerup', hostKeyUp); v.el.addEventListener('pointerleave', hostKeyUp); });
 }
 
-/* host pointer handlers */
-const pointerActive = new Set();
+const pointerSet = new Set();
 function hostKeyDown(e){
   e.preventDefault();
   const midi = Number(this.dataset.midi);
-  pointerActive.add(`${e.pointerId}:${midi}`);
-  try{ this.setPointerCapture && this.setPointerCapture(e.pointerId);}catch(e){}
+  try{ this.setPointerCapture && this.setPointerCapture(e.pointerId); }catch(e){}
+  pointerSet.add(`${e.pointerId}:${midi}`);
   this.classList.add('active');
-  // play locally (host always hears own playing)
+  // host hears own play
   playLocal('host', midi, 100, 1.0);
-  // send to selected students
+  // send to selected targets
   sendHostMidi(0x90, midi, 100);
 }
 function hostKeyUp(e){
   e.preventDefault();
   const midi = Number(this.dataset.midi);
-  pointerActive.forEach(tok => { if(tok.endsWith(':'+midi)) pointerActive.delete(tok); });
-  try{ this.releasePointerCapture && this.releasePointerCapture(e.pointerId);}catch(e){}
+  pointerSet.forEach(tok => { if(tok.endsWith(':'+midi)) pointerSet.delete(tok); });
+  try{ this.releasePointerCapture && this.releasePointerCapture(e.pointerId); }catch(e){}
   this.classList.remove('active');
   stopLocal('host', midi);
   sendHostMidi(0x80, midi, 0);
 }
 
-/* ----------------- STUDENT MANAGEMENT UI ----------------- */
-const students = new Map(); // keyboardNumber -> {keyboard,box,volumeEl,mutedEl,keyboardDiv,monitoring,volume}
+/* ---------- Students UI ---------- */
+const students = new Map(); // keyboardId -> {box,keyboardDiv,monitoring,muted,volEl}
 
-function ensureTargetCheckbox(key){
-  // create checkbox in targetListDiv if missing
-  let cb = targetListDiv.querySelector(`[data-k='${key}']`);
-  if (cb) return;
-  const label = document.createElement('label');
-  label.style.display = 'flex'; label.style.alignItems='center'; label.style.gap='6px';
-  const input = document.createElement('input');
-  input.type = 'checkbox';
-  input.dataset.k = key;
-  input.value = key;
-  label.appendChild(input);
-  const span = document.createElement('span'); span.textContent = 'K' + key;
-  label.appendChild(span);
+function ensureTargetCheckbox(k){
+  if (targetListDiv.querySelector(`[data-k='${k}']`)) return;
+  const label = document.createElement('label'); label.style.display='flex'; label.style.alignItems='center'; label.style.gap='6px';
+  const cb = document.createElement('input'); cb.type='checkbox'; cb.dataset.k = k; cb.value = k;
+  label.appendChild(cb); label.appendChild(document.createTextNode('K'+k));
   targetListDiv.appendChild(label);
 }
 
-function removeTargetCheckbox(key){
-  const cb = targetListDiv.querySelector(`[data-k='${key}']`);
-  if(cb) cb.parentElement.remove();
+function removeTargetCheckbox(k){
+  const el = targetListDiv.querySelector(`[data-k='${k}']`);
+  if (el && el.parentElement) el.parentElement.remove();
 }
 
-function renderStudentBox(k){
-  // create box with full 61-key keyboard for that student (collapsible)
-  const container = document.createElement('div');
-  container.className = 'studentBox';
-  container.id = 'studentBox_' + k;
-
-  const header = document.createElement('div'); header.className = 'studentHeader';
-  const left = document.createElement('div');
-  left.innerHTML = `<div><strong>Student Keyboard ${k}</strong></div><div id="last_${k}">Last note: (none)</div>`;
-  header.appendChild(left);
-
-  const controls = document.createElement('div'); controls.className = 'studentControls';
-
-  // monitor (solo)
-  const monitorBtn = document.createElement('button'); monitorBtn.textContent='Monitor'; monitorBtn.className='small';
-  monitorBtn.addEventListener('click', ()=> toggleMonitor(k));
-  controls.appendChild(monitorBtn);
-
-  // mute
-  const mute = document.createElement('button'); mute.textContent='Mute'; mute.className='small';
-  mute.addEventListener('click', ()=> toggleMute(k));
-  controls.appendChild(mute);
-
-  // per-student volume
-  const volLabel = document.createElement('span'); volLabel.textContent = 'Vol:';
-  const vol = document.createElement('input'); vol.type='range'; vol.min=0; vol.max=100; vol.value=90;
-  vol.addEventListener('input', ()=> { students.get(k).volume = vol.value/100; });
-  controls.appendChild(volLabel); controls.appendChild(vol);
-
-  // checkbox for receiving host audio
-  const recvLabel = document.createElement('label'); recvLabel.style.marginLeft='8px';
-  recvLabel.innerHTML = `<input type="checkbox" data-recv="${k}" /> Receive host audio`;
-  controls.appendChild(recvLabel);
-
-  header.appendChild(controls);
-  container.appendChild(header);
-
-  // collapsible full keyboard view for this student
-  const mini = document.createElement('div'); mini.className = 'miniKeyboard';
-  mini.style.marginTop='8px';
-  mini.style.overflowX='auto';
-  mini.style.borderTop = '1px dashed #eee';
-  mini.style.paddingTop = '8px';
-  mini.style.maxWidth = '100%';
-  // build full 61-key keyboard inside mini
-  const kb = document.createElement('div'); kb.style.position='relative'; kb.style.height = (whiteKeyH + 36) + 'px';
-  buildStudentKeyboard(kb, k);
-  mini.appendChild(kb);
-  container.appendChild(mini);
-
-  // store refs
-  students.set(k, { keyboard:k, box:container, monitorBtn, muteBtn:mute, volEl:vol, receiveCheckbox: recvLabel.querySelector('input'), keyboardDiv:kb, lastEl: container.querySelector('#last_'+k), monitoring:false, volume: vol.value/100, muted:false });
-
-  // add target checkbox for sending host audio
+function addStudent(k){
+  if (students.has(k)) return;
   ensureTargetCheckbox(k);
-
-  studentContainer.appendChild(container);
+  const box = document.createElement('div'); box.className='studentBox'; box.id='student_'+k;
+  const hdr = document.createElement('div'); hdr.className='studentHeader';
+  hdr.innerHTML = `<div><strong>Keyboard ${k}</strong><div id="lastnote_${k}" class="meta">Last: (none)</div></div>`;
+  const ctrls = document.createElement('div'); ctrls.className='studentControls';
+  const monitorBtn = document.createElement('button'); monitorBtn.className='small'; monitorBtn.textContent='Monitor';
+  monitorBtn.onclick = ()=> toggleMonitor(k);
+  const muteBtn = document.createElement('button'); muteBtn.className='small'; muteBtn.textContent='Mute';
+  muteBtn.onclick = ()=> toggleMute(k);
+  const vol = document.createElement('input'); vol.type='range'; vol.min=0; vol.max=100; vol.value=90;
+  vol.oninput = ()=> { const s = students.get(k); if(s) s.volume = vol.value/100; };
+  ctrls.appendChild(monitorBtn); ctrls.appendChild(muteBtn); ctrls.appendChild(vol);
+  hdr.appendChild(ctrls);
+  box.appendChild(hdr);
+  const mini = document.createElement('div'); mini.className='miniKeyboard'; mini.style.width='100%';
+  // build small visual keyboard
+  const kb = document.createElement('div'); kb.style.position='relative'; kb.style.height=(whiteKeyH+36)+'px';
+  buildStudentMiniKeyboard(kb, k);
+  mini.appendChild(kb); box.appendChild(mini);
+  studentContainer.appendChild(box);
+  students.set(k, { keyboard:k, box, keyboardDiv:kb, monitor:false, muted:false, volume: vol.value/100, monitorBtn, muteBtn });
 }
 
-function buildStudentKeyboard(container, k){
+function removeStudent(k){
+  if (!students.has(k)) return;
+  const s = students.get(k);
+  s.box.remove();
+  students.delete(k);
+  removeTargetCheckbox(k);
+}
+
+function toggleMonitor(k){
+  const s = students.get(k); if(!s) return;
+  s.monitor = !s.monitor;
+  s.monitorBtn.textContent = s.monitor ? 'Unmonitor' : 'Monitor';
+}
+function toggleMute(k){
+  const s = students.get(k); if(!s) return;
+  s.muted = !s.muted;
+  s.muteBtn.textContent = s.muted ? 'Unmute' : 'Mute';
+}
+
+function buildStudentMiniKeyboard(container, k){
   container.innerHTML = '';
   const whiteNodes = [];
-  for(let m=START_MIDI; m<=END_MIDI; m++){
-    const step = m % 12;
-    const isWhite = WHITE_STEPS.includes(step);
-    if (isWhite){
-      const el = document.createElement('div');
-      el.className = 'white';
-      el.style.width = whiteKeyW + 'px';
-      el.style.height = whiteKeyH + 'px';
-      el.style.display = 'inline-block';
-      el.style.boxSizing = 'border-box';
-      el.dataset.midi = m;
-      const label = document.createElement('div'); label.className='label'; label.style.bottom='-18px'; label.textContent = NOTE_NAMES[m%12] + Math.floor(m/12 - 1);
-      el.appendChild(label);
-      container.appendChild(el);
-      whiteNodes.push({m,el});
+  for(let m=START_MIDI;m<=END_MIDI;m++){
+    const step = m % 12; const isWhite = WHITE_STEPS.includes(step);
+    if(isWhite){
+      const el = document.createElement('div'); el.className='white'; el.style.width=whiteKeyW+'px'; el.style.height=whiteKeyH+'px';
+      el.dataset.midi = m; const lbl = document.createElement('div'); lbl.className='label'; lbl.style.bottom='-18px'; lbl.textContent = NOTE_NAMES[m%12]+Math.floor(m/12-1); el.appendChild(lbl);
+      container.appendChild(el); whiteNodes.push({m,el});
     }
   }
-  container.style.width = (whiteNodes.length * whiteKeyW) + 'px';
-  // blacks
+  container.style.width = (whiteNodes.length*whiteKeyW)+'px';
   for(let i=0;i<whiteNodes.length;i++){
-    const leftWhite = whiteNodes[i];
-    const candidate = leftWhite.m + 1;
-    const mod = candidate % 12;
-    if([1,3,6,8,10].includes(mod) && candidate <= END_MIDI){
-      const b = document.createElement('div');
-      b.className = 'black';
-      b.dataset.midi = candidate;
-      b.style.left = (leftWhite.el.offsetLeft + whiteKeyW - (blackKeyW/2)) + 'px';
-      b.style.width = blackKeyW + 'px';
-      b.style.height = blackKeyH + 'px';
-      b.innerHTML = `<span style="display:block;margin-top:6px;font-weight:700">${NOTE_NAMES[candidate%12].split('/')[0]}</span><span style="display:block;font-size:11px;margin-top:2px">${NOTE_NAMES[(candidate-1)%12].split('/')[0]}b</span>`;
-      container.appendChild(b);
+    const leftWhite = whiteNodes[i]; const candidate = leftWhite.m + 1; const mod = candidate%12;
+    if([1,3,6,8,10].includes(mod) && candidate<=END_MIDI){
+      const b = document.createElement('div'); b.className='black'; b.dataset.midi=candidate;
+      b.style.left = (leftWhite.el.offsetLeft + whiteKeyW - (blackKeyW/2)) + 'px'; container.appendChild(b);
     }
   }
 }
 
-/* ----------------- MONITOR / MUTE / TARGET HELPERS ----------------- */
-function toggleMonitor(k){
-  const st = students.get(k);
-  if (!st) return;
-  st.monitoring = !st.monitoring;
-  st.monitorBtn.textContent = st.monitoring ? 'Unmonitor' : 'Monitor';
-  // when monitoring one student, others can be still audible if per-student monitoring enabled
+/* ---------- Host -> server send ---------- */
+function getSelectedTargets(){
+  return Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).filter(cb => cb.checked).map(cb => cb.value);
+}
+function sendHostMidi(status,note,vel){
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const targets = getSelectedTargets();
+  if (targets.length === 0) return;
+  ws.send(JSON.stringify({ type:'host-midi', room: roomEl.value, targets, midi:[status,note,vel] }));
 }
 
-function toggleMute(k){
-  const st = students.get(k);
-  if (!st) return;
-  st.muted = !st.muted;
-  st.muteBtn.textContent = st.muted ? 'Unmute' : 'Mute';
-}
-
-/* select all / clear targets */
-document.getElementById('selectAll').addEventListener('click', ()=>{
-  Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).forEach(cb => cb.checked = true);
-});
-document.getElementById('clearTargets').addEventListener('click', ()=>{
-  Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).forEach(cb => cb.checked = false);
-});
-
-/* ----------------- WS MESSAGES (student join / leave / midi) ----------------- */
-function onServerMessage(obj){
-  // messages from server expected:
-  // { type: 'student-join', keyboard: '1' }
-  // { type: 'student-leave', keyboard: '1' }
-  // { type: 'midi', keyboard:'1', midi:[status,note,vel], classroom: '77' }
+/* ---------- Server message handling ---------- */
+function handleServerMsg(obj){
+  if (!obj || !obj.type) return;
   if (obj.type === 'student-join'){
-    const k = String(obj.keyboard);
-    if (!students.has(k)){
-      renderStudentBox(k);
-    }
-    statusEl.textContent = 'Students: ' + Array.from(students.keys()).join(',');
+    addStudent(String(obj.keyboard));
   } else if (obj.type === 'student-leave'){
-    const k = String(obj.keyboard);
-    if (students.has(k)){
-      // remove UI
-      const st = students.get(k);
-      st.box.remove();
-      students.delete(k);
-      removeTargetCheckbox(k);
-    }
-    statusEl.textContent = 'Students: ' + Array.from(students.keys()).join(',');
-  } else if (obj.type === 'midi'){
-    // student midi; display and optionally play locally for monitoring
+    removeStudent(String(obj.keyboard));
+  } else if (obj.type === 'midi-from-student'){
     const kb = String(obj.keyboard);
     const midi = obj.midi; // [status,note,vel]
     if (!midi || midi.length < 3) return;
     const [statusByte, note, vel] = midi;
     // ensure student exists
-    if (!students.has(kb)) {
-      renderStudentBox(kb);
-    }
-    const st = students.get(kb);
+    if (!students.has(kb)) addStudent(kb);
     // update last note
-    if (st.lastEl) st.lastEl.textContent = `Last note: ${NOTE_NAMES[note % 12]}${Math.floor(note/12 -1)} (vel ${vel})`;
-    // highlight that student's mini keyboard
-    const elt = st.keyboardDiv.querySelector(`[data-midi='${note}']`);
-    // we built the student keyboard using white black divs but without dataset on black; simpler approach: find any element whose dataset-midi equals note
-    const el = st.keyboardDiv.querySelector(`[data-midi='${note}']`);
-    if (el) {
-      el.classList.add('active');
-      setTimeout(()=> el.classList.remove('active'), 120);
-    } else {
-      // fallback: try to highlight by searching elements
-      const possible = st.keyboardDiv.querySelectorAll('.white, .black');
-      possible.forEach(node => {
-        if (Number(node.dataset.midi) === note) {
-          node.classList.add('active');
-          setTimeout(()=> node.classList.remove('active'), 120);
-        }
-      });
+    const lastEl = document.getElementById('lastnote_'+kb);
+    if (lastEl) lastEl.textContent = `Last: ${NOTE_NAMES[note%12]}${Math.floor(note/12 -1)} (v:${vel})`;
+    // highlight mini-key in student's keyboard
+    const s = students.get(kb);
+    if (s && s.keyboardDiv){
+      const el = s.keyboardDiv.querySelector(`[data-midi='${note}']`);
+      if (el){ el.classList.add('active'); setTimeout(()=>el.classList.remove('active'),120); }
     }
-
-    // play locally if host is monitoring this student OR if "monitoring mode" (we allow monitoring per st.monitoring)
-    // Also obey st.muted
-    if (!st.muted && st.monitoring) {
-      // use per-student volume multiplier
-      playLocal('student:'+kb, note, vel, st.volume || 0.9);
-    } else {
-      // default: host hears all students in low volume? You requested host monitors separately; so do not auto-play unless monitoring enabled.
-      // So we do nothing unless monitoring set.
+    // If host is monitoring that student, play locally (using that student's volume)
+    if (s && s.monitor && !s.muted){
+      playLocal('student:'+kb, note, vel, s.volume || 0.9);
     }
-  } else if (obj.type === 'presence'){
-    // optional: server could send initial presence list of students: { type:'presence', students: ['1','2'] }
-    if (Array.isArray(obj.students)){
-      obj.students.forEach(k => { if (!students.has(String(k))) renderStudentBox(String(k)); });
-    }
+  } else if (obj.type === 'presence' && Array.isArray(obj.students)){
+    // initial presence
+    obj.students.forEach(k => { if (!students.has(String(k))) addStudent(String(k)); });
   }
 }
 
-/* ----------------- HOST -> STUDENTS sending ----------------- */
-function sendHostMidi(statusByte, note, vel){
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  // build targets from target checkboxes
-  const boxes = Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).filter(cb => cb.checked);
-  const targets = boxes.map(cb => cb.value);
-  if (targets.length === 0) return; // nothing selected
-  const payload = { type:'host-midi', classroom: roomEl.value, targets, midi: [statusByte, note, vel] };
-  ws.send(JSON.stringify(payload));
-}
-
-/* ----------------- WS CONNECT / EVENTS ----------------- */
-connectBtn.addEventListener('click', () => {
-  if (ws && ws.readyState === WebSocket.OPEN) { ws.close(); connectBtn.textContent='Connect'; statusEl.textContent='Disconnected'; return; }
-
-  ws = new WebSocket(WS_URL);
-  ws.onopen = () => {
-    connectBtn.textContent = 'Disconnect';
-    statusEl.textContent = 'Connected';
-    // announce presence (host)
+/* ---------- WebSocket connect ---------- */
+connectBtn.addEventListener('click', ()=>{
+  if (ws && ws.readyState === WebSocket.OPEN){ ws.close(); connectBtn.textContent='Connect'; statusEl.textContent='Disconnected'; return; }
+  ws = new WebSocket(wsURL());
+  ws.onopen = ()=> {
+    connectBtn.textContent='Disconnect'; statusEl.textContent='Connected';
     ws.send(JSON.stringify({ type:'join', role:'host', room: roomEl.value }));
-    // ask server for list of current students (server may respond with presence)
+    // ask for presence
     ws.send(JSON.stringify({ type:'list-students', room: roomEl.value }));
   };
-  ws.onmessage = (ev) => {
-    try {
-      const obj = JSON.parse(ev.data);
-      onServerMessage(obj);
-    } catch(e){
-      console.warn('Invalid server msg', ev.data);
-    }
+  ws.onmessage = ev => {
+    try { const obj = JSON.parse(ev.data); handleServerMsg(obj); } catch(e){ console.warn('WS parse', e); }
   };
-  ws.onclose = () => {
-    connectBtn.textContent = 'Connect';
-    statusEl.textContent = 'Disconnected';
-  };
-  ws.onerror = () => {
-    statusEl.textContent = 'WebSocket error';
-  };
+  ws.onclose = ()=> { connectBtn.textContent='Connect'; statusEl.textContent='Disconnected'; };
+  ws.onerror = ()=> { statusEl.textContent='WebSocket error'; };
 });
 
-/* ----------------- HOST MIDI INPUT (physical) ----------------- */
+/* ---------- MIDI input for host ---------- */
 if (navigator.requestMIDIAccess){
-  navigator.requestMIDIAccess().then(access => {
+  navigator.requestMIDIAccess().then(access=>{
     for (let input of access.inputs.values()){
       input.onmidimessage = (ev) => {
-        const statusByte = ev.data[0] & 0xf0;
-        const note = ev.data[1];
-        const vel = ev.data[2];
-        // host hears own keyboard locally
-        if (statusByte === 0x90 && vel > 0) {
-          // visual host key highlight:
+        const status = ev.data[0] & 0xf0;
+        const note = ev.data[1]; const vel = ev.data[2];
+        if (status === 0x90 && vel > 0){
+          // highlight host key
           const el = hostKeyboardDiv.querySelector(`[data-midi='${note}']`);
-          if (el) { el.classList.add('active'); setTimeout(()=>el.classList.remove('active'),120); }
+          if (el){ el.classList.add('active'); setTimeout(()=>el.classList.remove('active'),120); }
           playLocal('host', note, vel, 1.0);
-          sendHostMidi(statusByte, note, vel);
-        } else if (statusByte === 0x80 || (statusByte === 0x90 && vel === 0)) {
+          sendHostMidi(status, note, vel);
+        } else if (status === 0x80 || (status === 0x90 && vel === 0)){
           stopLocal('host', note);
           sendHostMidi(0x80, note, 0);
         }
       };
     }
-  }).catch(()=>{ console.warn('MIDI unavailable'); });
+  }).catch(()=>console.warn('MIDI not available for host'));
 }
 
-/* ----------------- INIT ----------------- */
-function init(){
-  buildHostKeyboard(hostKeyboardDiv);
-  statusEl.textContent = 'Ready (not connected)';
-  // small UX: resume audio on first interaction
-  document.addEventListener('pointerdown', ()=> { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }, {once:true});
-}
+/* ---------- helpers ---------- */
+function statusMsg(t){ statusEl.textContent = t; }
+document.getElementById('selectAll').addEventListener('click', ()=> { Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).forEach(cb=>cb.checked=true); });
+document.getElementById('clearTargets').addEventListener('click', ()=> { Array.from(targetListDiv.querySelectorAll('input[type=checkbox]')).forEach(cb=>cb.checked=false); });
 
-init();
-
-/* ----------------- NOTES ----------------- */
-/*
-Server MUST:
- - send messages to host when students join/leave:
-    { type:'student-join', keyboard: '1' }
-    { type:'student-leave', keyboard: '1' }
- - forward student MIDI messages to host(s): when a student sends { type:'midi', midi:[...], keyboard:'1', room:'77' }
-    server should forward to all host connections in the same room:
-    hostSocket.send(JSON.stringify({ type:'midi', keyboard: studentKeyboard, midi: [status,note,vel], classroom: room }))
- - accept host->students messages:
-    { type:'host-midi', classroom:'77', targets:['1','3'], midi:[status,note,vel] }
-    server must forward this to student sockets whose keyboard id matches targets
-See server snippet below (after file).
-*/
+/* ---------- init ---------- */
+(function init(){
+  buildKeyboard(hostKeyboardDiv);
+  statusMsg('Ready (not connected)');
+  document.addEventListener('pointerdown', ()=> { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }, { once:true });
+})();
 </script>
 </body>
 </html>
