@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Student – MIDI Classroom</title>
+</head>
+<body>
+  <h2>Student Page</h2>
+
+  <label>Room Name:</label>
+  <input id="room" placeholder="enter room"><br><br>
+  <button onclick="connect()">Join Room</button>
+
+  <p id="status">Not connected</p>
+
+  <script>
+    let ws;
+
+    function connect() {
+      const room = document.getElementById("room").value;
+
+      ws = new WebSocket("wss://YOUR-RAILWAY-URL-HERE"); 
+      // for local testing use: ws = new WebSocket("ws://localhost:8080");
+
+      ws.onopen = () => {
+        document.getElementById("status").innerText = "Connected!";
+        ws.send(JSON.stringify({ type: "join", role: "student", room }));
+        setupMIDI();
+      };
+    }
+
+    async function setupMIDI() {
+      const access = await navigator.requestMIDIAccess();
+      const inputs = access.inputs.values();
+
+      for (let input of inputs) {
+        input.onmidimessage = (msg) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "midi", data: [...msg.data] }));
+          }
+        };
+      }
+    }
+  </script>
+</body>
+</html>
