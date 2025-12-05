@@ -1,28 +1,104 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Host - MIDI Classroom</title>
+  <meta charset="utf-8" />
+  <title>Host – MIDI Classroom</title>
 </head>
 <body>
-    <h1>Host – MIDI Classroom</h1>
+  <h2>Host Page</h2>
 
-    <button id="connect">Start Session</button>
+  <label>Room Name:</label>
+  <input id="room" placeholder="enter room" value="room1"><br><br>
 
-    <script>
-        let ws;
+  <button id="connectBtn">Start Hosting</button>
 
-        document.getElementById("connect").onclick = () => {
-            // Automatically connects to your Railway deployment
-            ws = new WebSocket(`wss://${window.location.host}`);
+  <p id="status">Not connected</p>
 
-            ws.onopen = () => {
-                console.log("Host connected.");
-            };
+  <pre id="log" style="background:#f6f6f6;padding:8px;"></pre>
 
-            ws.onmessage = (msg) => {
-                console.log("Received from student:", msg.data);
-            };
-        };
-    </script>
+  <script>
+    // ==== CONFIG =====
+    const PROD_WS = "wss://" + window.location.host;
+    const LOCAL_WS = "ws://localhost:8080";
+
+    function selectWebSocketUrl() {
+      if (location.hostname === "localhost") {
+        return LOCAL_WS;
+      } else {
+        return PROD_WS;
+      }
+    }
+
+    // ==== UI helpers ====
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+
+    function log(...args) {
+      console.log(...args);
+      logEl.textContent += args.join(" ") + "\n";
+    }
+
+    function setStatus(s) {
+      statusEl.textContent = s;
+      log("STATUS:", s);
+    }
+
+    // ==== WebSocket & Audio ====
+    let ws;
+    let audioCtx;
+
+    document.getElementById("connectBtn").addEventListener("click", () => {
+      const room = document.getElementById("room").value || "room1";
+      const wsUrl = selectWebSocketUrl();
+
+      setStatus("Connecting to " + wsUrl + " ...");
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        setStatus("Connected as host");
+        ws.send(JSON.stringify({ type: "join", role: "host", room }));
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "midi") {
+            playNote(msg.data);
+          }
+        } catch (e) {
+          log("Invalid WS message:", e);
+        }
+      };
+
+      ws.onclose = () => setStatus("Disconnected");
+      ws.onerror = () => setStatus("WebSocket error (check Railway logs)");
+    });
+
+    function playNote(data) {
+      const [status, note, velocity] = data;
+      const command = status & 0xf0;
+
+      if (command === 0x90 && velocity > 0) {
+        if (!audioCtx)
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        const freq = 440 * Math.pow(2, (note - 69) / 12);
+        osc.frequency.value = freq;
+        osc.type = "sine";
+
+        gain.gain.value = Math.max(0.02, velocity / 127);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      }
+    }
+  </script>
 </body>
 </html>
