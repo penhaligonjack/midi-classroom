@@ -1,86 +1,77 @@
-// server.js
+const express = require("express");
 const http = require("http");
-const fs = require("fs");
-const path = require("path");
 const WebSocket = require("ws");
+const path = require("path");
 
-// Create HTTP server to serve HTML files
-const server = http.createServer((req, res) => {
-  let filePath = "." + req.url;
-  if (filePath === "./") filePath = "./host.html"; // default page
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-  const ext = path.extname(filePath);
-  let contentType = "text/html";
-
-  if (ext === ".js") contentType = "text/javascript";
-  if (ext === ".css") contentType = "text/css";
-
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      res.writeHead(404);
-      res.end("404 - Not Found");
-    } else {
-      res.writeHead(200, { "Content-Type": contentType });
-      res.end(content, "utf-8");
-    }
-  });
-});
-
-// WebSocket server WITH explicit path
-const wss = new WebSocket.Server({
-  server,
-  path: "/ws"
-});
-
-const rooms = new Map();
+let rooms = {}; // roomName → { host: ws, students: Set<ws> }
 
 wss.on("connection", (ws) => {
-  ws.on("message", (msg) => {
+  ws.on("message", (raw) => {
+    let msg;
     try {
-      const obj = JSON.parse(msg);
+      msg = JSON.parse(raw);
+    } catch (e) {
+      console.log("Invalid JSON:", raw);
+      return;
+    }
 
-      if (obj.type === "join") {
-        ws.role = obj.role;
-        ws.room = obj.room;
+    if (msg.type === "join") {
+      const { role, room } = msg;
+      ws.role = role;
+      ws.room = room;
 
-        if (!rooms.has(ws.room)) {
-          rooms.set(ws.room, { hosts: new Set(), students: new Set() });
-        }
-
-        const room = rooms.get(ws.room);
-
-        if (ws.role === "host") room.hosts.add(ws);
-        if (ws.role === "student") room.students.add(ws);
-        return;
+      if (!rooms[room]) {
+        rooms[room] = { host: null, students: new Set() };
       }
 
-      if (obj.type === "midi") {
-        const room = rooms.get(ws.room);
-        if (!room) return;
+      if (role === "host") {
+        rooms[room].host = ws;
+      } else {
+        rooms[room].students.add(ws);
+      }
 
-        room.hosts.forEach((hostSocket) => {
-          if (hostSocket.readyState === WebSocket.OPEN) {
-            hostSocket.send(JSON.stringify({
-              type: "midi",
-              data: obj.data
-            }));
+      console.log(`Client joined room ${room} as ${role}`);
+      return;
+    }
+
+    // Relay MIDI
+    if (msg.type === "midi") {
+      const room = rooms[ws.room];
+      if (!room) return;
+
+      if (ws.role === "host") {
+        // Host sends to all students
+        room.students.forEach(s => {
+          if (s.readyState === WebSocket.OPEN) {
+            s.send(JSON.stringify(msg));
           }
         });
+      } else {
+        // Student sends to host
+        if (room.host && room.host.readyState === WebSocket.OPEN) {
+          room.host.send(JSON.stringify(msg));
+        }
       }
-    } catch (err) {
-      console.log("Error:", err);
     }
   });
 
   ws.on("close", () => {
-    if (!ws.room || !rooms.has(ws.room)) return;
-    const room = rooms.get(ws.room);
-    room.hosts.delete(ws);
-    room.students.delete(ws);
+    const room = rooms[ws.room];
+    if (!room) return;
+
+    if (ws.role === "host") {
+      rooms[ws.room].host = null;
+    } else {
+      room.students.delete(ws);
+    }
   });
 });
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log("WebSocket server running on port " + PORT);
 });
