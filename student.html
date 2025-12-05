@@ -1,66 +1,34 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>MIDI Student</title>
+    <title>Student - MIDI Classroom</title>
 </head>
 <body>
-<h2>MIDI Classroom – STUDENT</h2>
+    <h1>Student – MIDI Classroom</h1>
 
-<label>Room name:</label>
-<input id="room" value="room1">
-<button id="connectBtn">Connect</button>
+    <button id="connect">Join Session</button>
+    <button id="send">Send Test Message</button>
 
-<p id="status">Not connected</p>
+    <script>
+        let ws;
 
-<button id="sendNote">Send test MIDI note</button>
+        document.getElementById("connect").onclick = () => {
+            ws = new WebSocket(`wss://${window.location.host}`);
 
-<script>
-let ws = null;
+            ws.onopen = () => {
+                console.log("Student connected.");
+            };
 
-// ---- WebSocket URL selection ----
-function selectWebSocketUrl() {
-  if (location.hostname === "localhost") {
-    return "ws://localhost:8080";
-  }
-  return "wss://midi-classroom-production.up.railway.app";
-}
+            ws.onmessage = (msg) => {
+                console.log("Received from host:", msg.data);
+            };
+        };
 
-function setStatus(t) {
-  document.getElementById("status").innerText = t;
-}
-
-document.getElementById("connectBtn").addEventListener("click", () => {
-  const room = document.getElementById("room").value || "room1";
-  const wsUrl = selectWebSocketUrl();
-
-  setStatus("Connecting to " + wsUrl + "...");
-
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = () => {
-    setStatus("Connected");
-    ws.send(JSON.stringify({ type: "join", role: "student", room }));
-  };
-
-  ws.onmessage = (ev) => {
-    console.log("Message from host:", ev.data);
-  };
-
-  ws.onclose = () => setStatus("Disconnected");
-  ws.onerror = () => setStatus("WebSocket error — check Railway logs");
-});
-
-document.getElementById("sendNote").addEventListener("click", () => {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    alert("Not connected!");
-    return;
-  }
-
-  ws.send(JSON.stringify({
-    type: "midi",
-    data: { note: 60, velocity: 100, type: "noteon" }
-  }));
-});
-</script>
+        document.getElementById("send").onclick = () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send("Hello from Student!");
+            }
+        };
+    </script>
 </body>
 </html>
